@@ -29,7 +29,7 @@ theme, the scale and the controller.
 
 addon.name    = 'spelltracker-vanacore'
 addon.author  = 'koikaze'
-addon.version = '0.1.0'
+addon.version = '0.1.1'
 addon.desc    = 'SpellTracker: the spells this job can still learn, with where each one comes from.'
 
 local imgui = vana.imgui
@@ -110,6 +110,8 @@ local st = {
     -- the scroll ledger: the last answer's uint32 per page, a generation so a new answer rebuilds the rows, whether
     -- the server refused (non-Crystal-Warrior) and when we last asked (nil = never, the 60 s gate reads it)
     masks = nil, ledger_gen = 0, ledger_locked = false, ledger_at = nil, ledger_asked = false,
+    -- whether the window's position has been placed this session: once it has, ImGui owns it and a drag sticks
+    pos_placed = false,
 }
 
 local function say(text) pcall(vana.chat.write, '[Spells] ' .. text, 106) end
@@ -898,15 +900,21 @@ local function draw_window(me)
     w = math.min(w, sw - S(20))
     h = math.min(h, sh - S(20))
 
-    if st.recenter then
-        -- /spells reset asks for the centre now, which ImGuiCond_FirstUseEver alone would not do in this session
-        imgui.SetNextWindowPos({ math.floor((sw - w) / 2), math.floor((sh - h) / 2) }, U.ALWAYS)
-        st.recenter = nil
-    elseif cfg.x ~= nil and cfg.y ~= nil then
-        imgui.SetNextWindowPos({ math.floor(cfg.x), math.floor(cfg.y) }, U.ALWAYS)
-    else
-        -- the first use of a session, with no saved place yet: centred
-        imgui.SetNextWindowPos({ math.floor((sw - w) / 2), math.floor((sh - h) / 2) }, U.FIRST_USE_EVER)
+    -- The position is placed ONCE and then left alone. ImGuiCond_Always is applied on every frame, so pinning the
+    -- saved place with it (which this did) overrides the window's own position each frame: the player drags, the next
+    -- frame puts it back, and the window looks like it cannot be moved. It is forced for exactly two reasons - the
+    -- first frame this session, and /spells reset - and both clear the flag that asks for it.
+    if st.recenter or not st.pos_placed then
+        local px, py
+        if st.recenter then
+            px, py = (sw - w) / 2, (sh - h) / 2
+        elseif cfg.x ~= nil and cfg.y ~= nil then
+            px, py = cfg.x, cfg.y
+        else
+            px, py = (sw - w) / 2, (sh - h) / 2
+        end
+        imgui.SetNextWindowPos({ math.floor(px), math.floor(py) }, U.ALWAYS)
+        st.recenter, st.pos_placed = nil, true
     end
     imgui.SetNextWindowSize({ w, h }, U.ALWAYS)
     if st.focus_frames > 0 then
