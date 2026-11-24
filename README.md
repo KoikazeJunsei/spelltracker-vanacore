@@ -81,6 +81,22 @@ non-CW character is told so once and the addon stops asking.
 `Usable now`, `In storage` and `Show learnt` are independent filters, so "castable, already bought, not learnt" is
 three clicks.
 
+## Install
+
+**As a package (recommended).** `spelltracker-vanacore-<version>.vcaddon` from the [releases page](https://github.com/KoikazeJunsei/cexi-addons/releases)
+installs itself: double-click it, drop it in `Vanacore\addons\install\`, or use `/vana` > Addons > **Install from file**.
+VanaCore shows what is in it and where it came from before writing anything, installs it to
+`addons\vanacore\spelltracker-vanacore\`, moves any previous copy to `backups\addons\`, and offers to load it at every
+start. A web page can hand it over in one click:
+`vanacore://install/https://github.com/KoikazeJunsei/cexi-addons/releases/download/v0.1.0/spelltracker-vanacore-0.1.0.vcaddon`
+
+**By hand.** Copy this folder to `Vanacore\addons\vanacore\` and `/addon load spelltracker-vanacore`. Note that a
+hand-copied folder is never updated by a package later (the package installer refuses a folder that carries no
+`.vcaddon.json`), so prefer the package if you want updates.
+
+**Building the package** (from a VanaCore checkout): `python3 tools/vcaddon/pack.py <this folder> -o <out dir>`.
+The same files always produce the same bytes, so a rebuild of an unchanged addon is a no-op.
+
 ## Policy position (CatsEyeXI addon tiers)
 
 CatsEyeXI classifies by what an addon *achieves in gameplay*, not how it works inside (`catseyexi.com/addon-policy`).
