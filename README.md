@@ -81,6 +81,37 @@ non-CW character is told so once and the addon stops asking.
 `Usable now`, `In storage` and `Show learnt` are independent filters, so "castable, already bought, not learnt" is
 three clicks.
 
+## Policy position (CatsEyeXI addon tiers)
+
+CatsEyeXI classifies by what an addon *achieves in gameplay*, not how it works inside (`catseyexi.com/addon-policy`).
+By that measure this is **T2, Information Display**, and the precedent is on the approved list: **trove is approved
+T2** and sends the same `0x1A4` tab-summary request to the same server module for the same purpose - showing the
+player what is in their storage.
+
+What it does, exhaustively:
+
+* **reads** - job and level (`vana.game.self`), the spell bitfield (`vana.game.spells`), item ids in the eighteen
+  containers (`vana.game.container`), the shipped spell and item tables (`vana.gamedata`).
+* **sends exactly one kind of packet** - the ledger summary (`vana.packets.inject(false, 0x1A4, ...)`, action 13,
+  source 2), when the window opens or on `/spells sync`, never more than once a minute. It is a query: no withdraw
+  (action 2), no deposit, no trade, no item movement.
+* **opens a browser** on a badge or Wiki click, with `vana.system.open_url`, on the player's click.
+
+What it does not do, checked by grep over its own files: no `vana.chat.run`, `vana.command`, `QueueCommand`, no `/ma`
+`/ja` `/ws` `/equip` `/item` string anywhere, no synthetic input, no target selection, no movement, no memory write,
+no packet rewrite or blocking, no visibility or collision change, no `os.execute` / `io.popen` / `ffi.load` / socket,
+no timer loop. Nothing it does can fire without the player opening the window.
+
+The policy scanner reports `sends_packets=1 packet_handlers=1` for those two Ledger lines and leans **T1?**, because
+its tree counts any packet send as "acts for the player". That is triage, not a verdict (the scanner says so in its
+own docstring): the addon takes no game action, so T1 - "takes real actions for the player... gear-swap helpers,
+attended healing" - does not describe it. Its `dynamic_code`/`native_code` hits are the frozen `ui.lua`/`pad.lua` kit,
+and its 592 `urls` are the cited acquisition rows.
+
+**Unlisted addons require review before use** on CatsEyeXI, so the ticket is worth opening: link this folder and the
+`trove` precedent above. Nothing here is T3 (no unattended loop) or T4 (no server rule broken, no rate limit defeated,
+nothing the client hides is revealed).
+
 ## Where the data comes from
 
 - **Levels:** `vana.gamedata.spells`, VanaCore's table generated from CatsEyeXI's own `sql/spell_list.sql`. The three

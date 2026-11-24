@@ -28,7 +28,7 @@ theme, the scale and the controller.
 --]]
 
 addon.name    = 'spelltracker-vanacore'
-addon.author  = 'Carver'
+addon.author  = 'koikaze'
 addon.version = '0.1.0'
 addon.desc    = 'SpellTracker: the spells this job can still learn, with where each one comes from.'
 
