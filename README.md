@@ -45,6 +45,14 @@ show; it never changes a level or a spell's existence.
 
 A spell whose only sources the mode hides falls back to the mode's own badge (`Self-found`, or `No source`).
 
+### What the pill means, and what the tooltip adds
+
+The pill names the **one** source the acquisition table's own sentence cites - "Shop" over `Hasim / Lower Jeuno /
+23,400 Gil`, "Drop" over `Goblin Leecher / King Ranperre's Tomb (+28)` - so the label and the note always agree. The
+other paths the page recorded ride in the tooltip: the Auction House listing when the scroll has one, and, in ACE, the
+Wizardoll NPC that sells scrolled spells for Sparks of Eminence. Wizardoll is a tooltip line rather than a pill on
+purpose: as a pill it replaced every vendor, zone and price the table had just been read for.
+
 ## Where the data comes from
 
 - **Levels:** `vana.gamedata.spells`, VanaCore's table generated from CatsEyeXI's own `sql/spell_list.sql`. The three
@@ -54,7 +62,10 @@ A spell whose only sources the mode hides falls back to the mode's own badge (`S
 - **Learnt or not:** `vana.game.spells()`, the game's own 128-byte bitfield. Nothing asks the server and nothing is
   remembered locally, so the list matches the spell menu.
 - **Scroll sources:** `spell_sources.lua`, generated from BG-Wiki's acquisition tables by
-  `tools/make_spell_sources.py`. A spell whose page could not be read gets a neutral `No source` badge whose tooltip
+  `tools/make_spell_sources.py` - 519 spells with a source, 362 of them read off a scroll page's `Purchased From` /
+  `Dropped from` / `Obtained From` tables and 157 blue spells tagged by the rule that blue magic is learnt in battle
+  (`python tools/make_spell_sources.py <vanacore>/addons/vanacore/libs/gamedata` regenerates it; the pages are cached,
+  and the wiki rate-limits a fast reader, so the generator paces itself and retries). A spell whose page could not be read gets a neutral `No source` badge whose tooltip
   says no acquisition source is recorded. It is visibly unknown, never guessed: there is no fabricated vendor note in
   this addon.
 - **Links:** the database button opens `https://catseyexi.com/database?q=<scroll name>`, the site's own search route;

@@ -408,12 +408,25 @@ local function draw_row(dl, x0, y0, rw, row, i)
     local icon_name = tostring(badge.icon or 'question')
     local note = tostring(row.note or badge.note or '')
     local src = tostring(row.src or '')
-    -- ACE's Sparks shortcut is worth a line but not the pill: the pill names the vendor/drop the source table cites
-    -- (spells_core's TAG_ORDER), and this says the same spell can also be bought from the Wizardoll NPC
-    local wiz = (cfg.mode == 'ace' and #(row.tags or {}) > 0)
-        and '  -  ACE: the Wizardoll NPC also sells it for Sparks of Eminence' or ''
-    local tip = note .. wiz .. (src ~= '' and ('  (' .. src .. ')') or '')
-    if #tip > 260 then tip = tip:sub(1, 257) .. '...' end
+    -- the other paths ride in the tooltip, never on the pill: the pill names the one source the table's sentence cites
+    -- (spells_core keeps that pairing), and these say what else the page recorded. The Auction House is always one of
+    -- them when the scroll has an AH listing, since a scrolled spell that is also vendored would otherwise never show
+    -- its AH path anywhere.
+    local extra = ''
+    local seen_tags = row.tags or {}
+    local ah = false
+    for i = 1, #seen_tags do if seen_tags[i] == 'ah' then ah = true end end
+    if ah and cfg.mode ~= 'cw' then extra = extra .. '  -  also listed on the Auction House' end
+    local mode_has_wizardoll = false
+    do
+        local m = mode_by_id(cfg.mode)
+        for _, t in ipairs((m and m.tags) or {}) do if t == 'wizardoll' then mode_has_wizardoll = true end end
+    end
+    if mode_has_wizardoll and #seen_tags > 0 then
+        extra = extra .. '  -  this mode: the Wizardoll NPC sells scrolled spells for Sparks of Eminence'
+    end
+    local tip = note .. extra .. (src ~= '' and ('  (' .. src .. ')') or '')
+    if #tip > 320 then tip = tip:sub(1, 317) .. '...' end
 
     local tw, th = U.measure(label, F.semi, T.tiny)
     local pad = S(8)

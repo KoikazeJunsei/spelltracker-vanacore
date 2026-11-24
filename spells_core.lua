@@ -97,13 +97,21 @@ function C.badge(row, data, sources, mode)
     -- there is nothing to confirm the spell is even sold, so claiming the NPC stocks it would be invention.
     local wizardoll = (not hide.wizardoll) and source ~= nil and mode ~= nil and has(mode.tags, 'wizardoll')
 
+    -- the source row carries the KIND its own note describes (the generator picks both together), and that pairing is
+    -- what keeps a pill from reading 'AH' over a sentence naming a monster: a spell that is both auctioned and dropped
+    -- shows the path its note actually cites. The mode still gets its veto - a hidden kind falls through.
     local tag = nil
-    for i = 1, #TAG_ORDER do
-        local id = TAG_ORDER[i]
-        if id == 'wizardoll' then
-            if wizardoll then tag = id break end
-        elseif have[id] and not hide[id] then
-            tag = id break
+    if source ~= nil and source.tag ~= nil and not hide[source.tag] and source.tag ~= 'wizardoll' then
+        tag = source.tag
+    end
+    if tag == nil then
+        for i = 1, #TAG_ORDER do
+            local id = TAG_ORDER[i]
+            if id == 'wizardoll' then
+                if wizardoll then tag = id break end
+            elseif have[id] and not hide[id] then
+                tag = id break
+            end
         end
     end
     if tag == nil then tag = (mode and mode.fallback) or 'unknown' end
