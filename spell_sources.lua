@@ -3,7 +3,7 @@
 -- Keyed by spell id, the same ids as vana.gamedata.spells. Each row keeps the page it was read from in
 -- `src`, so every badge can be checked. Blue magic is tagged from the rule that it is learnt in battle.
 -- A spell with no row has no recorded source: the addon draws a "?" badge rather than a guess.
--- 519 spells with a source, 67 without a scroll page. Don't edit: rerun the generator.
+-- 585 spells with a source, 1 without a scroll page. Don't edit: rerun the generator.
 local M = {}
 
 M.spells = {
@@ -87,6 +87,7 @@ M.spells = {
 [96]={tag="shop",tags={"shop","ah","drop","bcnm"},note="Brave Ox / Rabao - (F-7) / 30,967 Gil",src="https://www.bg-wiki.com/ffxi/Scroll_of_Auspice"}, -- Auspice
 [97]={tag="shop",tags={"shop","ah","bcnm"},note="Zafif / Al Zahbi - (J-8) / 28,500 Gil",src="https://www.bg-wiki.com/ffxi/Scroll_of_Reprisal"}, -- Reprisal
 [98]={tag="shop",tags={"shop","ah","bcnm"},note="Sororo / Bastok Markets - (H-5) / 30,360 Gil",src="https://www.bg-wiki.com/ffxi/Scroll_of_Repose"}, -- Repose
+[99]={tag="shop",tags={"shop","ah","bcnm"},note="Layton / The Eldieme Necropolis (S) - (J-8) / 5,200 Gil",src="https://www.bg-wiki.com/ffxi/Sandstorm"}, -- Sandstorm
 [100]={tag="shop",tags={"shop","ah","bcnm"},note="Shohrun-Tuhrun / Windurst Waters South - (G-7) / 4,747 Gil Windurst at least 2nd place in Conquest (+2)",src="https://www.bg-wiki.com/ffxi/Scroll_of_Enfire"}, -- Enfire
 [101]={tag="shop",tags={"shop","ah","bcnm"},note="Shohrun-Tuhrun / Windurst Waters South - (G-7) / 3,770 Gil Windurst at least 2nd place in Conquest (+2)",src="https://www.bg-wiki.com/ffxi/Scroll_of_Enblizzard"}, -- Enblizzard
 [102]={tag="shop",tags={"shop","ah","bcnm"},note="Shohrun-Tuhrun / Windurst Waters South - (G-7) / 2,300 Gil Windurst at least 2nd place in Conquest (+2)",src="https://www.bg-wiki.com/ffxi/Scroll_of_Enaero"}, -- Enaero
@@ -100,6 +101,13 @@ M.spells = {
 [110]={tag="shop",tags={"shop","ah","drop","bcnm"},note="Tya Padolih / Mhaura - (G-9) / 7,203 Gil",src="https://www.bg-wiki.com/ffxi/Scroll_of_Regen_II"}, -- Regen II
 [111]={tag="drop",tags={"ah","drop","bcnm"},note="Foreseer Oramix / Ifrit's Cauldron (+12)",src="https://www.bg-wiki.com/ffxi/Scroll_of_Regen_III"}, -- Regen III
 [112]={tag="shop",tags={"shop","ah","drop","bcnm"},note="Zafif / Al Zahbi - (J-8) / 27,600 Gil (+1)",src="https://www.bg-wiki.com/ffxi/Scroll_of_Flash"}, -- Flash
+[113]={tag="shop",tags={"shop","ah","bcnm"},note="Layton / The Eldieme Necropolis (S) - (J-8) / 6,318 Gil",src="https://www.bg-wiki.com/ffxi/Rainstorm"}, -- Rainstorm
+[114]={tag="shop",tags={"shop","ah","bcnm"},note="Layton / The Eldieme Necropolis (S) - (J-8) / 6,786 Gil",src="https://www.bg-wiki.com/ffxi/Windstorm"}, -- Windstorm
+[115]={tag="shop",tags={"shop","ah","bcnm"},note="Layton / The Eldieme Necropolis (S) - (J-8) / 8,060 Gil",src="https://www.bg-wiki.com/ffxi/Firestorm"}, -- Firestorm
+[116]={tag="shop",tags={"shop","ah","bcnm"},note="Layton / The Eldieme Necropolis (S) - (J-8) / 8,580 Gil",src="https://www.bg-wiki.com/ffxi/Hailstorm"}, -- Hailstorm
+[117]={tag="shop",tags={"shop","ah","bcnm"},note="Layton / The Eldieme Necropolis (S) - (J-8) / 9,100 Gil",src="https://www.bg-wiki.com/ffxi/Thunderstorm"}, -- Thunderstorm
+[118]={tag="shop",tags={"shop","ah","bcnm"},note="Layton / The Eldieme Necropolis (S) - (J-8) / 10,725 Gil",src="https://www.bg-wiki.com/ffxi/Voidstorm"}, -- Voidstorm
+[119]={tag="shop",tags={"shop","ah","bcnm"},note="Layton / The Eldieme Necropolis (S) - (J-8) / 11,440 Gil",src="https://www.bg-wiki.com/ffxi/Aurorastorm"}, -- Aurorastorm
 [120]={tag="shop",tags={"shop","ah","quest","bcnm"},note="Amalasanda / Lower Jeuno - (J-8) / 34,656 Gil",src="https://www.bg-wiki.com/ffxi/Scroll_of_Teleport-Yhoat"}, -- Teleport-Yhoat
 [121]={tag="shop",tags={"shop","ah","quest","bcnm"},note="Amalasanda / Lower Jeuno - (J-8) / 34,656 Gil",src="https://www.bg-wiki.com/ffxi/Scroll_of_Teleport-Altep"}, -- Teleport-Altep
 [122]={tag="shop",tags={"shop","ah","quest","bcnm"},note="Amalasanda / Lower Jeuno - (J-8) / 32,176 Gil",src="https://www.bg-wiki.com/ffxi/Scroll_of_Teleport-Holla"}, -- Teleport-Holla
@@ -222,6 +230,35 @@ M.spells = {
 [275]={tag="shop",tags={"shop","ah","bcnm"},note="Mazween / Aht Urhgan Whitegate - (G-7) / 27,000 Gil",src="https://www.bg-wiki.com/ffxi/Scroll_of_Absorb-TP"}, -- Absorb-TP
 [276]={tag="shop",tags={"shop","ah","bcnm"},note="Susu / Lower Jeuno - (H-9) / 139,125 Gil",src="https://www.bg-wiki.com/ffxi/Scroll_of_Blind_II"}, -- Blind II
 [277]={tag="shop",tags={"shop","ah","bcnm"},note="Mazween / Aht Urhgan Whitegate - (G-7) / 70,560 Gil",src="https://www.bg-wiki.com/ffxi/Scroll_of_Dread_Spikes"}, -- Dread Spikes
+[278]={tag="shop",tags={"shop","ah","bcnm"},note="Layton / The Eldieme Necropolis (S) - (J-8) / 6,591 Gil",src="https://www.bg-wiki.com/ffxi/Geohelix"}, -- Geohelix
+[279]={tag="shop",tags={"shop","ah","bcnm"},note="Layton / The Eldieme Necropolis (S) - (J-8) / 6,786 Gil",src="https://www.bg-wiki.com/ffxi/Hydrohelix"}, -- Hydrohelix
+[280]={tag="shop",tags={"shop","ah","bcnm"},note="Layton / The Eldieme Necropolis (S) - (J-8) / 6,981 Gil",src="https://www.bg-wiki.com/ffxi/Anemohelix"}, -- Anemohelix
+[281]={tag="shop",tags={"shop","ah","bcnm"},note="Layton / The Eldieme Necropolis (S) - (J-8) / 7,714 Gil",src="https://www.bg-wiki.com/ffxi/Pyrohelix"}, -- Pyrohelix
+[282]={tag="shop",tags={"shop","ah","bcnm"},note="Layton / The Eldieme Necropolis (S) - (J-8) / 7,896 Gil",src="https://www.bg-wiki.com/ffxi/Cryohelix"}, -- Cryohelix
+[283]={tag="shop",tags={"shop","ah","bcnm"},note="Layton / The Eldieme Necropolis (S) - (J-8) / 8,625 Gil",src="https://www.bg-wiki.com/ffxi/Ionohelix"}, -- Ionohelix
+[284]={tag="shop",tags={"shop","ah","bcnm"},note="Layton / The Eldieme Necropolis (S) - (J-8) / 8,790 Gil",src="https://www.bg-wiki.com/ffxi/Noctohelix"}, -- Noctohelix
+[285]={tag="shop",tags={"shop","ah","bcnm"},note="Layton / The Eldieme Necropolis (S) - (J-8) / 8,940 Gil",src="https://www.bg-wiki.com/ffxi/Luminohelix"}, -- Luminohelix
+[287]={tag="shop",tags={"shop","ah","bcnm"},note="Erlene / The Eldieme Necropolis (S) - (J-8) / Quest: On Sabbatical",src="https://www.bg-wiki.com/ffxi/Klimaform"}, -- Klimaform
+[288]={tag="bcnm",tags={"ah","bcnm"},note="Prime Weapons • Ultimate Weapons • Ultimate Augments • Abjurations iL119 • JSE Necks • Divergence Augments • Escutcheons (+1)",src="https://www.bg-wiki.com/ffxi/Fire_Spirit"}, -- Fire Spirit
+[289]={tag="drop",tags={"ah","drop","bcnm"},note="Demon Warlock / Xarcabard / Castle Zvahl Baileys / Castle Zvahl Keep (+3)",src="https://www.bg-wiki.com/ffxi/Ice_Spirit"}, -- Ice Spirit
+[290]={tag="drop",tags={"ah","drop","bcnm"},note="Yagudo Oracle / Sauromugue Champaign / Castle Oztroja / Fort Karugo-Narugo (S) (+4)",src="https://www.bg-wiki.com/ffxi/Air_Spirit"}, -- Air Spirit
+[291]={tag="shop",tags={"shop","ah","bcnm"},note="Solby-Maholby / Norg - (H-9) / 450-515 Gil",src="https://www.bg-wiki.com/ffxi/Earth_Spirit"}, -- Earth Spirit
+[292]={tag="bcnm",tags={"ah","bcnm"},note="Prime Weapons • Ultimate Weapons • Ultimate Augments • Abjurations iL119 • JSE Necks • Divergence Augments • Escutcheons (+1)",src="https://www.bg-wiki.com/ffxi/Thunder_Spirit"}, -- Thunder Spirit
+[293]={tag="drop",tags={"ah","drop","bcnm"},note="Tonberry Harrier / Temple of Uggalepih (+5)",src="https://www.bg-wiki.com/ffxi/Water_Spirit"}, -- Water Spirit
+[294]={tag="drop",tags={"ah","drop","bcnm"},note="Crimson-toothed Pawberry / Temple of Uggalepih / C (+2)",src="https://www.bg-wiki.com/ffxi/Light_Spirit"}, -- Light Spirit
+[295]={tag="drop",tags={"ah","drop","bcnm"},note="Viscount Morax / Castle Zvahl Keep (+1)",src="https://www.bg-wiki.com/ffxi/Dark_Spirit"}, -- Dark Spirit
+[296]={tag="bcnm",tags={"bcnm"},note="Prime Weapons • Ultimate Weapons • Ultimate Augments • Abjurations iL119 • JSE Necks • Divergence Augments • Escutcheons (+1)",src="https://www.bg-wiki.com/ffxi/Carbuncle"}, -- Carbuncle
+[297]={tag="bcnm",tags={"bcnm"},note="Prime Weapons • Ultimate Weapons • Ultimate Augments • Abjurations iL119 • JSE Necks • Divergence Augments • Escutcheons (+1)",src="https://www.bg-wiki.com/ffxi/Fenrir"}, -- Fenrir
+[298]={tag="bcnm",tags={"bcnm"},note="Prime Weapons • Ultimate Weapons • Ultimate Augments • Abjurations iL119 • JSE Necks • Divergence Augments • Escutcheons (+1)",src="https://www.bg-wiki.com/ffxi/Ifrit"}, -- Ifrit
+[299]={tag="bcnm",tags={"bcnm"},note="Prime Weapons • Ultimate Weapons • Ultimate Augments • Abjurations iL119 • JSE Necks • Divergence Augments • Escutcheons (+1)",src="https://www.bg-wiki.com/ffxi/Titan"}, -- Titan
+[300]={tag="bcnm",tags={"bcnm"},note="Prime Weapons • Ultimate Weapons • Ultimate Augments • Abjurations iL119 • JSE Necks • Divergence Augments • Escutcheons (+1)",src="https://www.bg-wiki.com/ffxi/Leviathan"}, -- Leviathan
+[301]={tag="bcnm",tags={"bcnm"},note="Prime Weapons • Ultimate Weapons • Ultimate Augments • Abjurations iL119 • JSE Necks • Divergence Augments • Escutcheons (+1)",src="https://www.bg-wiki.com/ffxi/Garuda"}, -- Garuda
+[302]={tag="bcnm",tags={"bcnm"},note="Prime Weapons • Ultimate Weapons • Ultimate Augments • Abjurations iL119 • JSE Necks • Divergence Augments • Escutcheons (+1)",src="https://www.bg-wiki.com/ffxi/Shiva"}, -- Shiva
+[303]={tag="bcnm",tags={"bcnm"},note="Prime Weapons • Ultimate Weapons • Ultimate Augments • Abjurations iL119 • JSE Necks • Divergence Augments • Escutcheons (+1)",src="https://www.bg-wiki.com/ffxi/Ramuh"}, -- Ramuh
+[304]={tag="bcnm",tags={"bcnm"},note="Prime Weapons • Ultimate Weapons • Ultimate Augments • Abjurations iL119 • JSE Necks • Divergence Augments • Escutcheons (+1)",src="https://www.bg-wiki.com/ffxi/Diabolos"}, -- Diabolos
+[305]={tag="bcnm",tags={"bcnm"},note="Prime Weapons • Ultimate Weapons • Ultimate Augments • Abjurations iL119 • JSE Necks • Divergence Augments • Escutcheons (+1)",src="https://www.bg-wiki.com/ffxi/Odin"}, -- Odin
+[306]={tag="bcnm",tags={"bcnm"},note="Prime Weapons • Ultimate Weapons • Ultimate Augments • Abjurations iL119 • JSE Necks • Divergence Augments • Escutcheons (+1)",src="https://www.bg-wiki.com/ffxi/Alexander"}, -- Alexander
+[307]={tag="bcnm",tags={"bcnm"},note="Prime Weapons • Ultimate Weapons • Ultimate Augments • Abjurations iL119 • JSE Necks • Divergence Augments • Escutcheons (+1)",src="https://www.bg-wiki.com/ffxi/Cait_Sith"}, -- Cait Sith
 [312]={tag="shop",tags={"shop","ah","drop","bcnm"},note="Macchi Gazlitah / Ru'Lude Gardens - (H-9) / 31,878 Gil / Tier 3 shop only",src="https://www.bg-wiki.com/ffxi/Scroll_of_Enfire_II"}, -- Enfire II
 [313]={tag="shop",tags={"shop","ah","drop","bcnm"},note="Macchi Gazlitah / Ru'Lude Gardens - (H-9) / 30,492 Gil / Tier 3 shop only",src="https://www.bg-wiki.com/ffxi/Scroll_of_Enblizzard_II"}, -- Enblizzard II
 [314]={tag="shop",tags={"shop","ah","drop","bcnm"},note="Macchi Gazlitah / Ru'Lude Gardens - (H-9) / 27,968 Gil / Tier 3 shop only",src="https://www.bg-wiki.com/ffxi/Scroll_of_Enaero_II"}, -- Enaero II
@@ -257,6 +294,7 @@ M.spells = {
 [350]={tag="shop",tags={"shop","ah","quest","bcnm"},note="Amalasanda / Lower Jeuno - (J-8) / 2,849 Gil",src="https://www.bg-wiki.com/ffxi/Scroll_of_Dokumori:_Ichi"}, -- Dokumori: Ichi
 [353]={tag="shop",tags={"shop","ah","quest","bcnm"},note="Amalasanda / Lower Jeuno - (J-8) / 2,849 Gil",src="https://www.bg-wiki.com/ffxi/Scroll_of_Tonko:_Ichi"}, -- Tonko: Ichi
 [354]={tag="drop",tags={"ah","drop","bcnm"},note="Yagudo Assassin / Castle Oztroja / U (+6)",src="https://www.bg-wiki.com/ffxi/Scroll_of_Tonko:_Ni"}, -- Tonko: Ni
+[355]={tag="bcnm",tags={"bcnm"},note="Prime Weapons • Ultimate Weapons • Ultimate Augments • Abjurations iL119 • JSE Necks • Divergence Augments • Escutcheons (+1)",src="https://www.bg-wiki.com/ffxi/Siren"}, -- Siren
 [368]={tag="shop",tags={"shop","ah","bcnm"},note="Hortense / Bastok Markets - (K-10) / 66 Gil",src="https://www.bg-wiki.com/ffxi/Scroll_of_Foe_Requiem"}, -- Foe Requiem
 [369]={tag="shop",tags={"shop","ah","bcnm"},note="Hortense / Bastok Markets - (K-10) / 450 Gil",src="https://www.bg-wiki.com/ffxi/Scroll_of_Foe_Requiem_II"}, -- Foe Requiem II
 [370]={tag="shop",tags={"shop","ah","bcnm"},note="Hortense / Bastok Markets - (K-10) / 4,048 Gil",src="https://www.bg-wiki.com/ffxi/Scroll_of_Foe_Requiem_III"}, -- Foe Requiem III
@@ -323,6 +361,7 @@ M.spells = {
 [455]={tag="shop",tags={"shop","ah","bcnm"},note="Mjoll / Bastok Markets - (E-11) / 1,000 Gil",src="https://www.bg-wiki.com/ffxi/Scroll_of_Ice_Threnody"}, -- Ice Threnody
 [456]={tag="shop",tags={"shop","ah","bcnm"},note="Champalpieu / Upper Jeuno - (H-6) / 567 Gil",src="https://www.bg-wiki.com/ffxi/Scroll_of_Wind_Threnody"}, -- Wind Threnody
 [457]={tag="shop",tags={"shop","ah","bcnm"},note="Ensasa / Windurst Waters North - (H-9) / 283 Gil",src="https://www.bg-wiki.com/ffxi/Scroll_of_Earth_Threnody"}, -- Earth Threnody
+[458]={tag="shop",tags={"shop","ah","bcnm"},note="Lusiane / Southern San d'Oria - (F-8) / 1,265 Gil",src="https://www.bg-wiki.com/ffxi/Ltng._Threnody"}, -- Ltng. Threnody
 [459]={tag="shop",tags={"shop","ah","bcnm"},note="Champalpieu / Upper Jeuno - (H-6) / 420 Gil",src="https://www.bg-wiki.com/ffxi/Scroll_of_Water_Threnody"}, -- Water Threnody
 [460]={tag="shop",tags={"shop","ah","bcnm"},note="Lusiane / Southern San d'Oria - (F-8) / 110 Gil",src="https://www.bg-wiki.com/ffxi/Scroll_of_Light_Threnody"}, -- Light Threnody
 [461]={tag="shop",tags={"shop","ah","bcnm"},note="Mjoll / Bastok Markets - (E-11) / 199 Gil",src="https://www.bg-wiki.com/ffxi/Scroll_of_Dark_Threnody"}, -- Dark Threnody
@@ -334,6 +373,8 @@ M.spells = {
 [467]={tag="shop",tags={"shop","ah","bcnm"},note="Khaf Jhifanm / Aht Urhgan Whitegate - (H-11) / 4,400 Gil",src="https://www.bg-wiki.com/ffxi/Scroll_of_Raptor_Mazurka"}, -- Raptor Mazurka
 [468]={tag="shop",tags={"shop","ah","bcnm"},note="Harmodios / Bastok Markets - (K-10) / 91,425 Gil",src="https://www.bg-wiki.com/ffxi/Scroll_of_Foe_Sirvente"}, -- Foe Sirvente
 [469]={tag="shop",tags={"shop","ah","bcnm"},note="Harmodios / Bastok Markets - (K-10) / 91,425 Gil",src="https://www.bg-wiki.com/ffxi/Scroll_of_Adventurer%27s_Dirge"}, -- Adventurer's Dirge
+[478]={tag="bcnm",tags={"bcnm"},note="Prime Weapons • Ultimate Weapons • Ultimate Augments • Abjurations iL119 • JSE Necks • Divergence Augments • Escutcheons (+1)",src="https://www.bg-wiki.com/ffxi/Embrava"}, -- Embrava
+[502]={tag="bcnm",tags={"bcnm"},note="Prime Weapons • Ultimate Weapons • Ultimate Augments • Abjurations iL119 • JSE Necks • Divergence Augments • Escutcheons (+1)",src="https://www.bg-wiki.com/ffxi/Kaustra"}, -- Kaustra
 [513]={tag="learn",tags={"learn"},note="learnt by fighting the monster that casts it",src="https://www.bg-wiki.com/ffxi/Blue_Magic"}, -- Venom Shell
 [515]={tag="learn",tags={"learn"},note="learnt by fighting the monster that casts it",src="https://www.bg-wiki.com/ffxi/Blue_Magic"}, -- Maelstrom
 [517]={tag="learn",tags={"learn"},note="learnt by fighting the monster that casts it",src="https://www.bg-wiki.com/ffxi/Blue_Magic"}, -- Metallic Body
@@ -515,8 +556,33 @@ M.spells = {
 [794]={tag="shop",tags={"shop","ah","bcnm"},note="Eukalline / Western Adoulin - (I-5) / 94,185 Gil",src="https://www.bg-wiki.com/ffxi/Plate_of_Indi-Languor"}, -- Indi-Languor
 [795]={tag="shop",tags={"shop","ah","bcnm"},note="Eukalline / Western Adoulin - (I-5) / 53,460 Gil",src="https://www.bg-wiki.com/ffxi/Plate_of_Indi-Slow"}, -- Indi-Slow
 [796]={tag="shop",tags={"shop","ah","bcnm"},note="Eukalline / Western Adoulin - (I-5) / 103,040 Gil",src="https://www.bg-wiki.com/ffxi/Plate_of_Indi-Paralysis"}, -- Indi-Paralysis
+[798]={tag="bcnm",tags={"bcnm"},note="Prime Weapons • Ultimate Weapons • Ultimate Augments • Abjurations iL119 • JSE Necks • Divergence Augments • Escutcheons (+1)",src="https://www.bg-wiki.com/ffxi/Geo-Regen"}, -- Geo-Regen
+[799]={tag="bcnm",tags={"bcnm"},note="Prime Weapons • Ultimate Weapons • Ultimate Augments • Abjurations iL119 • JSE Necks • Divergence Augments • Escutcheons (+1)",src="https://www.bg-wiki.com/ffxi/Geo-Poison"}, -- Geo-Poison
+[800]={tag="bcnm",tags={"bcnm"},note="Prime Weapons • Ultimate Weapons • Ultimate Augments • Abjurations iL119 • JSE Necks • Divergence Augments • Escutcheons (+1)",src="https://www.bg-wiki.com/ffxi/Geo-Refresh"}, -- Geo-Refresh
+[802]={tag="bcnm",tags={"bcnm"},note="Prime Weapons • Ultimate Weapons • Ultimate Augments • Abjurations iL119 • JSE Necks • Divergence Augments • Escutcheons (+1)",src="https://www.bg-wiki.com/ffxi/Geo-STR"}, -- Geo-STR
+[803]={tag="bcnm",tags={"bcnm"},note="Prime Weapons • Ultimate Weapons • Ultimate Augments • Abjurations iL119 • JSE Necks • Divergence Augments • Escutcheons (+1)",src="https://www.bg-wiki.com/ffxi/Geo-DEX"}, -- Geo-DEX
+[804]={tag="bcnm",tags={"bcnm"},note="Prime Weapons • Ultimate Weapons • Ultimate Augments • Abjurations iL119 • JSE Necks • Divergence Augments • Escutcheons (+1)",src="https://www.bg-wiki.com/ffxi/Geo-VIT"}, -- Geo-VIT
+[805]={tag="bcnm",tags={"bcnm"},note="Prime Weapons • Ultimate Weapons • Ultimate Augments • Abjurations iL119 • JSE Necks • Divergence Augments • Escutcheons (+1)",src="https://www.bg-wiki.com/ffxi/Geo-AGI"}, -- Geo-AGI
+[806]={tag="bcnm",tags={"bcnm"},note="Prime Weapons • Ultimate Weapons • Ultimate Augments • Abjurations iL119 • JSE Necks • Divergence Augments • Escutcheons (+1)",src="https://www.bg-wiki.com/ffxi/Geo-INT"}, -- Geo-INT
+[807]={tag="bcnm",tags={"bcnm"},note="Prime Weapons • Ultimate Weapons • Ultimate Augments • Abjurations iL119 • JSE Necks • Divergence Augments • Escutcheons (+1)",src="https://www.bg-wiki.com/ffxi/Geo-MND"}, -- Geo-MND
+[808]={tag="bcnm",tags={"bcnm"},note="Prime Weapons • Ultimate Weapons • Ultimate Augments • Abjurations iL119 • JSE Necks • Divergence Augments • Escutcheons (+1)",src="https://www.bg-wiki.com/ffxi/Geo-CHR"}, -- Geo-CHR
+[809]={tag="bcnm",tags={"bcnm"},note="Prime Weapons • Ultimate Weapons • Ultimate Augments • Abjurations iL119 • JSE Necks • Divergence Augments • Escutcheons (+1)",src="https://www.bg-wiki.com/ffxi/Geo-Fury"}, -- Geo-Fury
+[810]={tag="bcnm",tags={"bcnm"},note="Prime Weapons • Ultimate Weapons • Ultimate Augments • Abjurations iL119 • JSE Necks • Divergence Augments • Escutcheons (+1)",src="https://www.bg-wiki.com/ffxi/Geo-Barrier"}, -- Geo-Barrier
+[811]={tag="bcnm",tags={"bcnm"},note="Prime Weapons • Ultimate Weapons • Ultimate Augments • Abjurations iL119 • JSE Necks • Divergence Augments • Escutcheons (+1)",src="https://www.bg-wiki.com/ffxi/Geo-Acumen"}, -- Geo-Acumen
+[812]={tag="bcnm",tags={"bcnm"},note="Prime Weapons • Ultimate Weapons • Ultimate Augments • Abjurations iL119 • JSE Necks • Divergence Augments • Escutcheons (+1)",src="https://www.bg-wiki.com/ffxi/Geo-Fend"}, -- Geo-Fend
+[813]={tag="bcnm",tags={"bcnm"},note="Prime Weapons • Ultimate Weapons • Ultimate Augments • Abjurations iL119 • JSE Necks • Divergence Augments • Escutcheons (+1)",src="https://www.bg-wiki.com/ffxi/Geo-Precision"}, -- Geo-Precision
+[814]={tag="bcnm",tags={"bcnm"},note="Prime Weapons • Ultimate Weapons • Ultimate Augments • Abjurations iL119 • JSE Necks • Divergence Augments • Escutcheons (+1)",src="https://www.bg-wiki.com/ffxi/Geo-Voidance"}, -- Geo-Voidance
+[815]={tag="bcnm",tags={"bcnm"},note="Prime Weapons • Ultimate Weapons • Ultimate Augments • Abjurations iL119 • JSE Necks • Divergence Augments • Escutcheons (+1)",src="https://www.bg-wiki.com/ffxi/Geo-Focus"}, -- Geo-Focus
+[816]={tag="bcnm",tags={"bcnm"},note="Prime Weapons • Ultimate Weapons • Ultimate Augments • Abjurations iL119 • JSE Necks • Divergence Augments • Escutcheons (+1)",src="https://www.bg-wiki.com/ffxi/Geo-Attunement"}, -- Geo-Attunement
+[821]={tag="bcnm",tags={"bcnm"},note="Prime Weapons • Ultimate Weapons • Ultimate Augments • Abjurations iL119 • JSE Necks • Divergence Augments • Escutcheons (+1)",src="https://www.bg-wiki.com/ffxi/Geo-Slip"}, -- Geo-Slip
+[822]={tag="bcnm",tags={"bcnm"},note="Prime Weapons • Ultimate Weapons • Ultimate Augments • Abjurations iL119 • JSE Necks • Divergence Augments • Escutcheons (+1)",src="https://www.bg-wiki.com/ffxi/Geo-Torpor"}, -- Geo-Torpor
+[823]={tag="bcnm",tags={"bcnm"},note="Prime Weapons • Ultimate Weapons • Ultimate Augments • Abjurations iL119 • JSE Necks • Divergence Augments • Escutcheons (+1)",src="https://www.bg-wiki.com/ffxi/Geo-Vex"}, -- Geo-Vex
+[824]={tag="bcnm",tags={"bcnm"},note="Prime Weapons • Ultimate Weapons • Ultimate Augments • Abjurations iL119 • JSE Necks • Divergence Augments • Escutcheons (+1)",src="https://www.bg-wiki.com/ffxi/Geo-Languor"}, -- Geo-Languor
+[825]={tag="bcnm",tags={"bcnm"},note="Prime Weapons • Ultimate Weapons • Ultimate Augments • Abjurations iL119 • JSE Necks • Divergence Augments • Escutcheons (+1)",src="https://www.bg-wiki.com/ffxi/Geo-Slow"}, -- Geo-Slow
+[826]={tag="bcnm",tags={"bcnm"},note="Prime Weapons • Ultimate Weapons • Ultimate Augments • Abjurations iL119 • JSE Necks • Divergence Augments • Escutcheons (+1)",src="https://www.bg-wiki.com/ffxi/Geo-Paralysis"}, -- Geo-Paralysis
 [828]={tag="shop",tags={"shop","ah","bcnm"},note="Ledericus / Western Adoulin - (H-5) / 34,000 Gil",src="https://www.bg-wiki.com/ffxi/Scroll_of_Fira"}, -- Fira
 [830]={tag="shop",tags={"shop","ah","bcnm"},note="Ledericus / Western Adoulin - (H-5) / 46,440 Gil",src="https://www.bg-wiki.com/ffxi/Scroll_of_Blizzara"}, -- Blizzara
+[832]={tag="shop",tags={"shop","ah","bcnm"},note="Ledericus / Western Adoulin - (H-5) / 26,600 Gil",src="https://www.bg-wiki.com/ffxi/Aera"}, -- Aera
 [834]={tag="shop",tags={"shop","ah","bcnm"},note="Ledericus / Western Adoulin - (H-5) / 7,476 Gil",src="https://www.bg-wiki.com/ffxi/Scroll_of_Stonera"}, -- Stonera
 [835]={tag="shop",tags={"shop","ah","drop","bcnm"},note="Ledericus / Western Adoulin - (H-5) / 504,000 Gil",src="https://www.bg-wiki.com/ffxi/Scroll_of_Stonera_II"}, -- Stonera II
 [836]={tag="shop",tags={"shop","ah","bcnm"},note="Ledericus / Western Adoulin - (H-5) / 54,600 Gil",src="https://www.bg-wiki.com/ffxi/Scroll_of_Thundara"}, -- Thundara

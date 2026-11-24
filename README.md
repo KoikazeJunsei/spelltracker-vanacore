@@ -62,8 +62,10 @@ purpose: as a pill it replaced every vendor, zone and price the table had just b
 - **Learnt or not:** `vana.game.spells()`, the game's own 128-byte bitfield. Nothing asks the server and nothing is
   remembered locally, so the list matches the spell menu.
 - **Scroll sources:** `spell_sources.lua`, generated from BG-Wiki's acquisition tables by
-  `tools/make_spell_sources.py` - 519 spells with a source, 362 of them read off a scroll page's `Purchased From` /
+  `tools/make_spell_sources.py` - 585 spells with a source, 428 of them read off a scroll page's `Purchased From` /
   `Dropped from` / `Obtained From` tables and 157 blue spells tagged by the rule that blue magic is learnt in battle
+  (a spell with no scroll item page is read off its own spell page: `Scroll of Firestorm` does not exist, `Firestorm`
+  does). `Diaga II` has no page at all and keeps the neutral badge.
   (`python tools/make_spell_sources.py <vanacore>/addons/vanacore/libs/gamedata` regenerates it; the pages are cached,
   and the wiki rate-limits a fast reader, so the generator paces itself and retries). A spell whose page could not be read gets a neutral `No source` badge whose tooltip
   says no acquisition source is recorded. It is visibly unknown, never guessed: there is no fabricated vendor note in
