@@ -1,0 +1,97 @@
+# SpellTracker for VanaCore
+
+What your job can still learn, and where each scroll comes from.
+
+`/spells` opens one glass card: your job and level, how many spells are still to learn, the mode's acquisition badges,
+a search box, skill pills, and a scrolling list of every spell your job (or subjob) can use at this level cap. Each row
+shows whether the spell is already learnt, its level, whether it comes from the main job or the subjob, its skill and
+MP cost, and one badge for where a scroll comes from. Click the badge to search the CatsEyeXI item database, click the
+Wiki button for BG-Wiki, or double-click the row for the database.
+
+The window is drawn with the same `ui.lua` kit as the other VanaCore addons (Auction House, Party Finder, VanaMaps,
+Clawmark, VanaStore), so it follows the theme, the window scale, the opacity and the controller.
+
+## Commands
+
+```
+/spells                     the window on or off
+/spells show                open it
+/spells hide                close it
+/spells reset               position, scale and opacity back to their defaults
+/spells mode ace|cw|wew     which acquisition systems the badges allow
+/spells theme <id>          one of the kit's themes; no id lists them
+/spells scale <50-300>      the window's size in percent
+/spells learned on|off      show the spells already learnt, too
+/spells sound on|off        the bell as the window opens
+/spells debug               the row counts and the last error, in chat
+```
+
+An unknown argument prints the same list in one chat line.
+
+## The three modes
+
+CatsEyeXI runs three rulesets for learning spells, and the mode only changes which acquisition badges a spell may
+show; it never changes a level or a spell's existence.
+
+- **ACE - Accelerated CatsEye.** Every CatsEye system: Wizardoll learns spells for Sparks of Eminence, plus the
+  Auction House, Ventures and Summit of the Stars.
+  Source: `bg-wiki CatsEyeXI_Content/Accelerated`.
+- **CW - Crystal Warrior.** Self-found: no Auction House and no Wizardoll; vendors, drops, quests and battlefields
+  only. Source: `bg-wiki CatsEyeXI_Content/Crystal_Warrior`. The Auction House and Wizardoll exclusion is an
+  inference: the Wings page says only ACE and WEW share the Auction House. If a CW player reports the AH working,
+  that is the row to change.
+- **WEW - Wings Era Warrior.** Records of Eminence are off, so no Sparks for Wizardoll; the Auction House stays.
+  Source: `bg-wiki CatsEyeXI_Content/Wings_Era_Warrior`.
+
+A spell whose only sources the mode hides falls back to the mode's own badge (`Self-found`, or `No source`).
+
+## Where the data comes from
+
+- **Levels:** `vana.gamedata.spells`, VanaCore's table generated from CatsEyeXI's own `sql/spell_list.sql`. The three
+  rows where CatsEyeXI differs from LandSandBoat's table are shipped with their citation in `spells_data.lua`
+  (`Cure IV` PLD 51, `Indi-Int` GEO 34, `Geo-Haste` GEO 93). No level is scaled or invented: a spell a job only
+  reaches above the level cap is shown at its real level and marked out of reach.
+- **Learnt or not:** `vana.game.spells()`, the game's own 128-byte bitfield. Nothing asks the server and nothing is
+  remembered locally, so the list matches the spell menu.
+- **Scroll sources:** `spell_sources.lua`, generated from BG-Wiki's acquisition tables by
+  `tools/make_spell_sources.py`. A spell whose page could not be read gets a neutral `No source` badge whose tooltip
+  says no acquisition source is recorded. It is visibly unknown, never guessed: there is no fabricated vendor note in
+  this addon.
+- **Links:** the database button opens `https://catseyexi.com/database?q=<scroll name>`, the site's own search route;
+  the Wiki button opens `https://www.bg-wiki.com/ffxi/<Spell_Name>`. Geomancy spells search for `Plate of <name>`,
+  every other spell for `Scroll of <name>`. Where VanaCore cannot open a browser the link is copied to the clipboard
+  and a toast says so.
+
+## Install
+
+Copy the `spelltracker-vanacore` folder into `Vanacore\addons\vanacore\`, then:
+
+```
+/addon load spelltracker-vanacore
+/spells
+```
+
+Settings are per character, in
+`settings\addons\spelltracker-vanacore\<Character>\settings.json` (theme, scale, mode, learned filter, skill filter,
+window position, opacity, opening sound).
+
+## Files
+
+| File | What |
+|---|---|
+| `spelltracker-vanacore.lua` | the window, the events, the commands and the settings |
+| `spells_core.lua` | pure logic: rows, counts, badges, URLs (no `vana`, testable headlessly) |
+| `spells_data.lua` | the three modes, the badge definitions, the skill pills and the cited level overrides |
+| `spell_sources.lua` | the generated per-spell acquisition table |
+| `ui.lua` | the family's drawing kit (unmodified) |
+| `pad.lua` | controller support shared by the family (unmodified) |
+| `fonts/`, `sounds/small_bell.wav`, `images/jobs.png` | the kit's faces, the bell and the job icons |
+
+`spells_core.lua` and `spell_sources.lua` are required softly: a copy missing one still loads and opens an empty list
+(rather than failing at load), and `/spells debug` says which module is missing.
+
+## Controller
+
+With a gamepad enabled in `vanacore.ini` (`[addons] gamepad = 1`), the D-pad moves the focus, Confirm presses the
+focused control (a mode, a skill pill, the learnt toggle, a row's badge or Wiki button), and Cancel leaves a text box.
+The wheel and the list still answer the mouse.
