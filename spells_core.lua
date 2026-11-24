@@ -169,6 +169,57 @@ local function words_of(query)
     return out
 end
 
+-- The spell an item holds. Two prefixes, because the game's own item names use two: every magic scroll is
+-- 'Scroll of <spell>' and every geomancy plate is 'Plate of <spell>'. Matched case-insensitively and with any
+-- spacing ('Scroll  of') because the name comes out of vana.gamedata.items, which is generated, while a test or a
+-- hand-built slot list can say anything. Anything else - a crystal, a piece of gear, a bare spell name - is nil:
+-- returning the name unchanged would make every item in the bags look like a scroll nobody can learn.
+local function strip_scroll_prefix(s, word)
+    local _, e = s:lower():find('^%s*' .. word .. '%s+of%s+')
+    if e == nil then return nil end
+    return s:sub(e + 1):match('^%s*(.-)%s*$')
+end
+
+function C.scroll_name(item_name)
+    if type(item_name) ~= 'string' then return nil end
+    local rest = strip_scroll_prefix(item_name, 'scroll')
+    if rest == nil then rest = strip_scroll_prefix(item_name, 'plate') end
+    if rest == nil or rest == '' then return nil end
+    return rest
+end
+
+-- What the player's bags already hold, keyed by lower-cased spell name so a row can look itself up in one step.
+-- A spell found in two bags is ONE entry: the count is the player's whole stock (four Scrolls of Cure IV are four),
+-- the bag is the first one it was found in, and bags keeps every bag it turned up in so the tooltip can say where
+-- the rest are. The first bag is kept rather than the last because the scan walks the bags in the client's own order
+-- (Inventory first), so 'in your Inventory' is the answer a player expects.
+function C.held(slots)
+    local out = {}
+    local list = slots or {}
+    for i = 1, #list do
+        local slot = list[i]
+        if type(slot) == 'table' then
+            local spell = C.scroll_name(slot.name)
+            if spell ~= nil then
+                local key = spell:lower()
+                local n = tonumber(slot.count) or 1
+                if n < 1 then n = 1 end
+                local bag = slot.bag or ''
+                local entry = out[key]
+                if entry == nil then
+                    out[key] = { bag = bag, count = n, bags = { bag } }
+                else
+                    entry.count = entry.count + n
+                    local seen = false
+                    for j = 1, #entry.bags do if entry.bags[j] == bag then seen = true break end end
+                    if not seen then entry.bags[#entry.bags + 1] = bag end
+                end
+            end
+        end
+    end
+    return out
+end
+
 local function name_has(words, name)
     if #words == 0 then return true end
     local n = (name or ''):lower()
@@ -214,6 +265,11 @@ function C.rows(spells, opts)
     local cap = opts.cap or data.level_cap
     local show_learned = opts.show_learned
     if show_learned == nil then show_learned = false end
+    -- two filters that only ever narrow: 'usable now' (the player can cast it this minute) and a held map from
+    -- spells_core.held(). Neither touches the skill/query/learned filters, the sort or the counts - a caller that
+    -- wants the whole list simply does not pass them.
+    local only_now = opts.only_now == true
+    local held = opts.held
 
     for i = 1, #list do
         local sp = list[i]
@@ -223,9 +279,14 @@ function C.rows(spells, opts)
             -- a spell neither job learns is not this player's list at all; a trust is not a spell anyone learns
             if (main ~= nil or sub ~= nil) and type_ok(pill, sp.type) and name_has(words, sp.name) then
                 local learned = C.has_bit(opts.bits, sp.id)
+                local castable = C.castable(sp, {
+                    job = opts.job, level = opts.level,
+                    sub_job = opts.sub_job, sub_level = opts.sub_level,
+                })
                 -- learned rows are hidden by default: the tracker's question is "what is left", and the toggle in the
-                -- window is the way back to the full list
-                if show_learned or not learned then
+                -- window is the way back to the full list. 'usable now' is the same predicate the row reports, read
+                -- one row earlier, so the list is built once and sorted once rather than filtered twice.
+                if (show_learned or not learned) and (castable or not only_now) then
                     local row = {
                         id = sp.id,
                         name = sp.name or '',
@@ -234,10 +295,7 @@ function C.rows(spells, opts)
                         mp = sp.mp,
                         element = sp.element,
                         learned = learned,
-                        castable = C.castable(sp, {
-                            job = opts.job, level = opts.level,
-                            sub_job = opts.sub_job, sub_level = opts.sub_level,
-                        }),
+                        castable = castable,
                         unreachable = not reachable(sp.jobs, cap),
                         -- the level shown is the one the player's own path asks for: the main job's when it learns the
                         -- spell at all, otherwise the subjob's own requirement (not sub_level/2, which is the level the
@@ -245,6 +303,14 @@ function C.rows(spells, opts)
                         level = main or sub,
                         via = main ~= nil and 'main' or 'sub',
                     }
+                    -- the bag entry is COPIED onto the row, bags list included: the window and any caller get a value
+                    -- of their own, so a row cannot be edited into (or out of) the map the next rebuild reads
+                    local in_bag = held ~= nil and held[(sp.name or ''):lower()] or nil
+                    if in_bag ~= nil then
+                        local bags = {}
+                        for j = 1, #(in_bag.bags or {}) do bags[j] = in_bag.bags[j] end
+                        row.held = { bag = in_bag.bag, count = in_bag.count, bags = bags }
+                    end
                     row.short_job = C.job_short(main ~= nil and opts.job or opts.sub_job)
                     -- the raw tag list stays on the row for a tooltip that wants to list every path; the single
                     -- resolved tag is what the pill draws
@@ -282,13 +348,16 @@ function C.urls(name, scroll)
 end
 
 function C.counts(rows)
-    local c = { total = 0, learned = 0, missing = 0, unreachable = 0 }
+    local c = { total = 0, learned = 0, missing = 0, unreachable = 0, held = 0 }
     local list = rows or {}
     for i = 1, #list do
         local r = list[i]
         c.total = c.total + 1
         if r.learned then c.learned = c.learned + 1 else c.missing = c.missing + 1 end
         if r.unreachable then c.unreachable = c.unreachable + 1 end
+        -- how many of these rows have the scroll already: the window's header line counts against the whole job
+        -- list, so it must not fall when a search or a pill narrows the view
+        if r.held ~= nil then c.held = c.held + 1 end
     end
     return c
 end

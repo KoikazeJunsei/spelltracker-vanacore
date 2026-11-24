@@ -22,8 +22,11 @@ Clawmark, VanaStore), so it follows the theme, the window scale, the opacity and
 /spells theme <id>          one of the kit's themes; no id lists them
 /spells scale <50-300>      the window's size in percent
 /spells learned on|off      show the spells already learnt, too
+/spells now on|off          only the spells you could cast at your level right now
+/spells held on|off         only the spells whose scroll is already in one of your bags
+/spells rescan              read your bags again now (they are re-read every 4 seconds anyway)
 /spells sound on|off        the bell as the window opens
-/spells debug               the row counts and the last error, in chat
+/spells debug               the row counts, the bags it read, and the last error, in chat
 ```
 
 An unknown argument prints the same list in one chat line.
@@ -52,6 +55,27 @@ The pill names the **one** source the acquisition table's own sentence cites - "
 other paths the page recorded ride in the tooltip: the Auction House listing when the scroll has one, and, in ACE, the
 Wizardoll NPC that sells scrolled spells for Sparks of Eminence. Wizardoll is a tooltip line rather than a pill on
 purpose: as a pill it replaced every vendor, zone and price the table had just been read for.
+
+## "Do I already have this scroll?"
+
+The tracker reads every bag the client exposes and marks a spell whose scroll or plate is sitting in one of them: a bag
+icon with the count, a tooltip naming the bag, and a `N scrolls already in your bags` line in the header. `Usable now`
+and `In storage` are independent filters, so "castable and already bought" is two clicks.
+
+The bags are the eighteen the client has - Inventory, Mog Safe, Storage, Temporary, Mog Locker, Satchel, Sack, Case,
+Mog Wardrobe 1 to 8, Mog Safe 2, Recycle Bin (`docs/addons/04-game-data.md`). Bags are re-read every four seconds and on
+`/spells rescan`.
+
+**The ephemeral box and Gramateus are a different question, and a bag scan cannot answer them.** They are not
+containers the client holds: VanaCore's own `Container` enum ends at 17 and every id above it is refused, which is why
+CatsEyeXI's Trove addon reads its ephemeral-box counts straight out of the synthesis packet (`trove/core/crafting.lua`)
+instead of from a bag. Scrolls are also not in the box - once `Decrypting Antiquity II` is done they are auto-transferred
+to **Gramateus in Upper Jeuno**, where you can see them but not take them back.
+
+The server will answer that question per scroll: `!scroll <name>` reports whether it is stored in the box or at
+Gramateus. A following increment drives that command from the window (a per-row query and an explicit, spaced-out bulk
+sync parsed against the server's own reply lines). Until it lands, this window's storage check is the bags only, and it
+says so rather than implying it looked at the box.
 
 ## Where the data comes from
 

@@ -15,8 +15,11 @@ In game:
   /spells theme <id>       one of the UI kit's themes; no id lists them
   /spells scale <50-300>   the window's size
   /spells learned on|off   show the spells already learnt, too
+  /spells now on|off       only the spells you could cast this minute
+  /spells held on|off      only the spells whose scroll is already in one of your bags
+  /spells rescan           read the bags again now instead of waiting for the cache
   /spells sound on|off     the bell as the window opens
-  /spells debug            the row counts and the last error, in chat
+  /spells debug            the row counts, the bags it could read and the last error, in chat
 
 Click a spell's badge to search the CatsEyeXI database, its Wiki button for BG-Wiki, or double-click the row for the
 database. The window is drawn with the family's ui.lua kit, so it looks like the other VanaCore addons and follows the
@@ -67,6 +70,9 @@ end
 
 local DEFAULTS = {
     theme = 'aurora', scale = 100, mode = 'ace', show_learned = false, skill = 'all',
+    -- the two Phase-2 filters: 'usable now' and 'in storage'. Per character like the rest, because a mule and a
+    -- main want different answers out of the same window.
+    only_now = false, held_only = false,
     x = nil, y = nil, opacity = 100, open_sound = true,
 }
 
@@ -85,9 +91,12 @@ local cfg = config.data
 local st = {
     open = false, anim = 0,
     query = { '' },
-    rows = {}, counts = { total = 0, learned = 0, missing = 0, unreachable = 0 },
-    cache_key = nil, spells = nil,
+    rows = {}, counts = { total = 0, learned = 0, missing = 0, unreachable = 0, held = 0 },
+    cache_key = nil, spells = nil, items = nil,
     last_error = nil, focus_frames = 0,
+    -- the bag scan is a separate, slower thing than the row build: it is cached by the clock and versioned, so a
+    -- new scan (a scroll moved into the inventory) rebuilds the rows without a keystroke
+    scan = nil, scan_at = nil, scan_gen = 0,
 }
 
 local function say(text) pcall(vana.chat.write, '[Spells] ' .. text, 106) end
@@ -242,20 +251,159 @@ local function spell_array(t)
 end
 
 -------------------------------------------------------------------------------
+-- What is in the bags
+-------------------------------------------------------------------------------
+
+-- The client's own 18 containers in its own order, copied from docs/addons/04-game-data.md:518-532. It stops at 17
+-- on purpose: the client's Container enum ends there and its container_item rejects anything above it, so probing
+-- 18 and up would only ever answer nil - a longer loop would read as "there might be more bags", and there are not.
+local BAG_NAME = {
+    [0] = 'Inventory', 'Mog Safe', 'Storage', 'Temporary items', 'Mog Locker', 'Mog Satchel', 'Mog Sack', 'Mog Case',
+    'Mog Wardrobe', 'Mog Safe 2', 'Mog Wardrobe 2', 'Mog Wardrobe 3', 'Mog Wardrobe 4', 'Mog Wardrobe 5',
+    'Mog Wardrobe 6', 'Mog Wardrobe 7', 'Mog Wardrobe 8', 'Recycle Bin',
+}
+local BAG_LAST = 17
+-- four seconds: long enough that walking through a zone does not re-read 18 bags every frame, short enough that a
+-- scroll picked up in the last fight shows up while the player is still looking at the list
+local SCAN_SECONDS = 4
+-- the marker a row wears when its scroll is in a bag. 'bag-shopping' is the honest glyph, but ui.lua's FA table is
+-- generated and this copy has no bag entry; fa() quietly substitutes the question mark for a name it does not know,
+-- so the choice is probed against that fallback rather than assumed.
+local BAG_ICON = 'sack-dollar'
+do
+    local ok_a, a = pcall(U.fa, 'bag-shopping')
+    local ok_q, q = pcall(U.fa, 'question')
+    if ok_a and ok_q and type(a) == 'string' and a ~= q then BAG_ICON = 'bag-shopping' end
+end
+
+-- item id -> name, or false where the client had none: a bag holds item ids, and the same scroll sits in the same
+-- slot every scan, so the name is looked up once per item per session rather than once per bag slot per scan
+local ITEM_NAME = {}
+
+local function item_table()
+    if st.items ~= nil then return st.items end
+    -- vana.gamedata.items loads in 4,096-id parts on first touch; a nil answer here is "not yet", so it is retried
+    -- on the next scan rather than latched for the session
+    local ok, t = pcall(function () return vana.gamedata.items end)
+    if ok and type(t) == 'table' then st.items = t end
+    return st.items
+end
+
+local function item_name(items, id)
+    local hit = ITEM_NAME[id]
+    if hit ~= nil then
+        if hit == false then return nil end
+        return hit
+    end
+    local name = nil
+    -- log_name, not name: an item's `name` is the bare thing ('Utsusemi: Ichi', 'Holy'), and only `log_name` carries
+    -- the 'scroll of' / 'plate of' the scroll test needs (item 4629: name="Holy", log_name="scroll of Holy"). Reading
+    -- `name` here made every scroll look like a piece of gear, so no row was ever marked - the fake fixture in the
+    -- tests said 'Scroll of Cure IV' and the shipped table says 'scroll of' in lower case on the log name.
+    -- The table is paged and generated: one bad id must cost that item, not the whole bag.
+    local ok, row = pcall(function () return items[id] end)
+    if ok and type(row) == 'table' then
+        if type(row.log_name) == 'string' and row.log_name ~= '' then name = row.log_name
+        elseif type(row.name) == 'string' and row.name ~= '' then name = row.name end
+    end
+    ITEM_NAME[id] = name or false
+    return name
+end
+
+-- The ephemeral box is not in the client's container set, so a memory scan cannot see it however far this loop runs:
+-- the Container enum ends at 17 (abi.hpp:1198) and CatsEyeXI's own Trove reads the box out of the synthesis packet
+-- rather than a bag (legacy/ashita/addons/trove/core/crafting.lua:780). It can only be ASKED about - the server
+-- answers the !scroll command with its 'currently in storage' line - so this file claims nothing about the box
+-- either way, and a later increment is what may drive that query. Do not 'fix' this by adding an id to the loop.
+--
+-- Reads every bag the character owns and turns the scrolls among them into spells_core.held()'s map. The whole walk
+-- is inside one pcall: a client without containers, a bag that errors mid-walk and a character at the select screen
+-- all have to leave the window drawing with no held rows, never raising into the frame that asked.
+local function scan_bags()
+    local now = 0
+    do
+        local ok, t = pcall(U.clock)
+        if ok and tonumber(t) then now = t end
+    end
+    if st.scan ~= nil and st.scan_at ~= nil and (now - st.scan_at) < SCAN_SECONDS then return st.scan end
+    st.scan_at = now
+
+    local scan = { at = now, slots = {}, bags_read = {}, held = {} }
+    local items = item_table()
+    local walked, walk_err = pcall(function ()
+        for id = 0, BAG_LAST do
+            local ok_bag, bag = pcall(vana.game.container, id)
+            -- nil is the ordinary answer for a bag this character does not own; capacity 1 is a bag holding nothing
+            -- but its reserved slot 0
+            if ok_bag and type(bag) == 'table' then
+                local cap = tonumber(bag.capacity) or 0
+                if cap >= 2 then
+                    scan.bags_read[#scan.bags_read + 1] = id
+                    for slot = 1, cap - 1 do
+                        local s = bag[slot]
+                        if type(s) == 'table' and s.id ~= nil and s.id ~= 0 then
+                            local name = nil
+                            if items ~= nil then name = item_name(items, s.id) end
+                            if name ~= nil then
+                                scan.slots[#scan.slots + 1] = {
+                                    name = name, bag = BAG_NAME[id] or ('bag ' .. tostring(id)),
+                                    count = tonumber(s.count) or 1,
+                                }
+                            end
+                        end
+                    end
+                end
+            end
+        end
+    end)
+    if not walked then fail('scan', walk_err) end
+
+    if CORE ~= nil and type(CORE.held) == 'function' then
+        local ok_held, held = pcall(CORE.held, scan.slots)
+        if ok_held and type(held) == 'table' then scan.held = held end
+    end
+    st.scan = scan
+    st.scan_gen = (st.scan_gen or 0) + 1
+    st.cache_key = nil
+    return scan
+end
+
+local function held_count(map)
+    local n = 0
+    if type(map) == 'table' then for _ in pairs(map) do n = n + 1 end end
+    return n
+end
+
+-- the bags this scan could read, as ids and names, for /spells debug: the answer to "is the bag I put the scroll in
+-- even being read", which is the one question a player can act on
+local function bag_list(scan)
+    local names = {}
+    for i = 1, #((scan and scan.bags_read) or {}) do
+        local id = scan.bags_read[i]
+        names[#names + 1] = tostring(id) .. ' ' .. tostring(BAG_NAME[id] or '?')
+    end
+    if #names == 0 then return 'none' end
+    return table.concat(names, ', ')
+end
+
+-------------------------------------------------------------------------------
 -- The rows
 -------------------------------------------------------------------------------
 
 -- rebuilding is keyed on everything that can change a row: the character's jobs, the bitfield, the filters. Typing in
--- the search box thus costs one rebuild per keystroke, not one per frame.
-local function rebuild(me, bits)
+-- the search box thus costs one rebuild per keystroke, not one per frame. The scan generation is in the key because a
+-- new bag scan changes row.held without changing anything else.
+local function rebuild(me, bits, scan)
+    local held = (scan and scan.held) or nil
     local key = table.concat({
         me.job, me.level, me.sub_job, me.sub_level,
         tostring(cfg.mode), tostring(cfg.show_learned), tostring(cfg.skill), st.query[1] or '', bits or '',
+        tostring(cfg.only_now), tostring(cfg.held_only), tostring(st.scan_gen or 0),
     }, '|')
     if key == st.cache_key then return end
     st.cache_key = key
     st.rows = {}
-    st.counts = { total = 0, learned = 0, missing = 0, unreachable = 0 }
+    st.counts = { total = 0, learned = 0, missing = 0, unreachable = 0, held = 0 }
 
     local spells = spell_table()
     if spells ~= nil then spells = spell_array(spells) end
@@ -266,9 +414,11 @@ local function rebuild(me, bits)
     local cap = tonumber(data.level_cap) or 75
 
     -- the counts are the whole job's list, not the filtered view: '12 to learn' should not fall when a search narrows
+    -- the view, and the header's 'N scrolls already in your bags' is counted against the same list for the same
+    -- reason (a filter must not look as if the scrolls left the bags)
     local ok_all, all = pcall(CORE.rows, spells, {
         job = me.job, level = me.level, sub_job = me.sub_job, sub_level = me.sub_level,
-        bits = bits, show_learned = true, mode = cfg.mode, data = data, sources = sources, cap = cap,
+        bits = bits, show_learned = true, mode = cfg.mode, data = data, sources = sources, cap = cap, held = held,
     })
     if ok_all and type(all) == 'table' then
         local ok_c, counts = pcall(CORE.counts, all)
@@ -283,8 +433,18 @@ local function rebuild(me, bits)
         job = me.job, level = me.level, sub_job = me.sub_job, sub_level = me.sub_level,
         bits = bits, query = st.query[1] ~= '' and st.query[1] or nil, skill = skill,
         mode = cfg.mode, show_learned = cfg.show_learned == true, data = data, sources = sources, cap = cap,
+        held = held, only_now = cfg.only_now == true,
     })
     if ok_rows and type(rows) == 'table' then
+        -- 'in storage' is the window's own filter, not spells_core's: it is one pass over the rows the core just
+        -- built and sorted, so the order the player sees is untouched
+        if cfg.held_only == true then
+            local with_scroll = {}
+            for i = 1, #rows do
+                if rows[i].held ~= nil then with_scroll[#with_scroll + 1] = rows[i] end
+            end
+            rows = with_scroll
+        end
         st.rows = rows
     else
         fail('rows', rows)
@@ -369,6 +529,20 @@ local function set_learned(on)
     save()
 end
 
+-- 'usable now' and 'in storage' save the same way the learnt toggle does: one click, written to this character's
+-- settings, effective on the next rebuild (which the cleared cache key forces)
+local function set_only_now(on)
+    cfg.only_now = on == true
+    st.cache_key = nil
+    save()
+end
+
+local function set_held_only(on)
+    cfg.held_only = on == true
+    st.cache_key = nil
+    save()
+end
+
 -- the search box: the theme's own frame, with the room on the left for the magnifier. Escape clears the query rather
 -- than closing the window, which is what a box with text in it should do.
 local function draw_search(dl, x, cy, w)
@@ -435,7 +609,16 @@ local function draw_row(dl, x0, y0, rw, row, i)
     local wsize = S(22)
     local wx = x0 + rw - wsize - S(4)
     local wy = y0 + (rowh - wsize) / 2
-    local pillx = wx - S(8) - pillw
+    -- the bag marker sits between the pill and the Wiki button, and the pill yields the room for it: which bag the
+    -- scroll is in is worth a column, the Wiki button is not worth moving
+    local held = row.held
+    local held_n = 0
+    local mark_w = 0
+    if type(held) == 'table' then
+        held_n = tonumber(held.count) or 1
+        mark_w = S(18) + (held_n > 1 and S(12) or 0)
+    end
+    local pillx = wx - S(8) - pillw - mark_w
     local pilly = y0 + (rowh - pillh) / 2
 
     -- the row's own click area stops before the badge and the Wiki button: overlapping invisible buttons would let
@@ -484,6 +667,27 @@ local function draw_row(dl, x0, y0, rw, row, i)
         U.with_font(F.text, T.small, imgui.SetTooltip, tip)
     end
 
+    -- the scroll is already in a bag: the marker names the bag on hover, and says where the rest are when the player
+    -- has the same spell in more than one (a copy in the satchel is why 'in your Inventory' alone is not the answer)
+    if type(held) == 'table' then
+        local mx = pillx + pillw + S(2)
+        local mw_box = math.max(1, wx - S(2) - mx)
+        imgui.SetCursorScreenPos({ mx, y0 })
+        local _, mark_hovered = U.hit(key .. 'b', mw_box, rowh, S(4))
+        local icon_x = mx + S(8)
+        U.icon(dl, icon_x, cy, BAG_ICON, P.ok, T.tiny)
+        if held_n > 1 then U.text_mid(dl, icon_x + S(7), cy, tostring(held_n), P.ok, F.semi, T.tiny) end
+        if mark_hovered then
+            local where = 'in your ' .. tostring(held.bag or 'bags')
+            local others = {}
+            for i = 1, #(held.bags or {}) do
+                if held.bags[i] ~= held.bag then others[#others + 1] = tostring(held.bags[i]) end
+            end
+            if #others > 0 then where = where .. ', also ' .. table.concat(others, ', ') end
+            U.with_font(F.text, T.small, imgui.SetTooltip, where)
+        end
+    end
+
     local wiki_pressed = U.icon_button(dl, key .. 'w', wx, wy, wsize, 'scroll', P.cyan, 'Open BG-Wiki')
 
     if wiki_pressed then
@@ -500,7 +704,9 @@ local function draw_window(me)
         if ok and tonumber(w) and tonumber(h) then sw, sh = w, h end
     end
     local sc = scale_pct() / 100
-    local w = math.max(S(320), math.floor(S(700)))
+    -- wider than the list needs, because the controls row has to hold three switches, the mode segments and the
+    -- search box side by side: at 700 the third one lands on top of the search field (measured at the kit's 13 px face)
+    local w = math.max(S(320), math.floor(S(880)))
     local h = math.max(S(260), math.floor(S(560)))
     w = math.min(w, sw - S(20))
     h = math.min(h, sh - S(20))
@@ -552,12 +758,25 @@ local function draw_window(me)
             local counts = st.counts or {}
             local line = string.format('%d to learn - %d learnt', tonumber(counts.missing) or 0, tonumber(counts.learned) or 0)
             U.text(dl, x + S(60), y + S(44), line, P.dim, F.text, T.small)
+            -- how many of this job's spells already have their scroll in a bag. Counted against the whole job list
+            -- (st.counts), and only falls back to the smaller 'showing' number when a filter is on and the rows are
+            -- still visible: narrowing the search must not look as if the scrolls left the bags.
+            local held_total = tonumber(counts.held) or 0
+            if held_total > 0 then
+                local held_shown = 0
+                local shown_rows = st.rows or {}
+                for i = 1, #shown_rows do if shown_rows[i].held ~= nil then held_shown = held_shown + 1 end end
+                local n = held_shown > 0 and held_shown or held_total
+                local lw = U.measure(line, F.text, T.small)
+                U.text(dl, x + S(60) + lw + S(14), y + S(44),
+                    string.format('%d scrolls already in your bags', n), P.accent, F.semi, T.small)
+            end
             if U.icon_button(dl, '##st_close', x + w - S(42), y + S(14), S(26), 'xmark', P.dim, 'Close') then
                 set_open(false)
             end
             dl:AddLine({ x + S(18), y + S(66) }, { x + w - S(18), y + S(66) }, U.u32(P.line, 0.9), 1)
 
-            -- controls: the mode, the learnt toggle, the search
+            -- controls: the mode, the three filters, the search
             local cy = y + S(86)
             local mode_opts = {}
             for _, md in ipairs(modes()) do mode_opts[#mode_opts + 1] = { md.id, md.label or md.id } end
@@ -565,10 +784,26 @@ local function draw_window(me)
                 function (o) return pill_colour(MODE_COLOR, o[1], 'accent') end)
             if clicked then set_mode(clicked) end
 
-            local shown, pressed = U.toggle(dl, '##st_learned', x + S(18) + mw + S(22), cy, 'Show learnt', cfg.show_learned == true)
-            if pressed then set_learned(shown) end
+            -- three independent AND filters, each saved on click like the learnt toggle. The switches are laid out
+            -- left to right and the search box takes the room that is left, so a label a font wider cannot overlap it.
+            local ctl_x = x + S(18) + mw + S(22)
+            local function toggle_at(key, label, on)
+                local shown, pressed = U.toggle(dl, key, ctl_x, cy, label, on)
+                -- the kit's switch is a 40 px track, a 10 px gap and the label; 16 px between switches
+                ctl_x = ctl_x + S(40) + S(10) + select(1, U.measure(label, F.text, T.small)) + S(16)
+                return shown, pressed
+            end
+            local learnt_on, learnt_pressed = toggle_at('##st_learned', 'Show learnt', cfg.show_learned == true)
+            if learnt_pressed then set_learned(learnt_on) end
+            local now_on, now_pressed = toggle_at('##st_now', 'Usable now', cfg.only_now == true)
+            if now_pressed then set_only_now(now_on) end
+            local held_on, held_pressed = toggle_at('##st_held', 'In storage', cfg.held_only == true)
+            if held_pressed then set_held_only(held_on) end
 
-            local escaped, search_focused = draw_search(dl, x + w - S(18) - S(210), cy, S(210))
+            local search_x = x + w - S(18) - S(210)
+            if search_x < ctl_x + S(10) then search_x = ctl_x + S(10) end
+            local search_w = math.min(S(210), x + w - S(18) - search_x)
+            local escaped, search_focused = draw_search(dl, search_x, cy, math.max(S(80), search_w))
 
             -- the skill pills: All, then the seven the file names
             local py = y + S(116)
@@ -657,7 +892,9 @@ local function tick()
         U.anim.pad_shown = ok_shown and pad_shown == true
     end
     local me = current_player()
-    rebuild(me, game_bits())
+    -- the bags are read before the rows: an empty bag, a nil container and a character at the select screen all have
+    -- to end up with unheld rows, never with a frame that raised
+    rebuild(me, game_bits(), scan_bags())
     if st.open or st.anim > 0 then draw_window(me) end
     U.draw_toasts(t)
 end
@@ -694,7 +931,7 @@ end)
 -- Commands
 -------------------------------------------------------------------------------
 
-local HELP = '/spells [toggle|show|hide|reset|mode ace|cw|wew|theme <id>|scale <50-300>|learned on|off|sound on|off|debug]'
+local HELP = '/spells [toggle|show|hide|reset|mode ace|cw|wew|theme <id>|scale <50-300>|learned on|off|now on|off|held on|off|rescan|sound on|off|debug]'
 
 listen('command', function (e)
     local words = {}
@@ -747,6 +984,27 @@ listen('command', function (e)
         else
             say('/spells learned on|off')
         end
+    elseif what == 'now' then
+        if arg == 'on' or arg == 'off' then
+            set_only_now(arg == 'on')
+            say('only spells you can cast now: ' .. arg)
+        else
+            say('/spells now on|off')
+        end
+    elseif what == 'held' then
+        if arg == 'on' or arg == 'off' then
+            set_held_only(arg == 'on')
+            say('only spells with a scroll in your bags: ' .. arg)
+        else
+            say('/spells held on|off')
+        end
+    elseif what == 'rescan' then
+        -- the owner's way out of the 4 s cache: they just moved a scroll and want the row marked now
+        st.scan_at = nil
+        local scan = scan_bags()
+        st.cache_key = nil
+        if st.open then rebuild(current_player(), game_bits(), scan) end
+        say(string.format('bags read: %s - %d scrolls held', bag_list(scan), held_count(scan and scan.held)))
     elseif what == 'sound' then
         if arg == 'on' or arg == 'off' then
             cfg.open_sound = arg == 'on'
@@ -757,13 +1015,18 @@ listen('command', function (e)
             say('/spells sound on|off')
         end
     elseif what == 'debug' then
-        -- measured now, not whenever the window last drew: the command works with the window shut
+        -- measured now, not whenever the window last drew: the command works with the window shut, and it forces a
+        -- fresh scan so the two bag lines are this moment's answer rather than the cache's
         st.cache_key = nil
-        rebuild(current_player(), game_bits())
+        st.scan_at = nil
+        local scan = scan_bags()
+        rebuild(current_player(), game_bits(), scan)
         local c = st.counts or {}
         say(string.format('%d shown, %d in the job, %d learnt, %d to learn, %d out of reach at %d',
             #(st.rows or {}), tonumber(c.total) or 0, tonumber(c.learned) or 0, tonumber(c.missing) or 0,
             tonumber(c.unreachable) or 0, tonumber(DATA and DATA.level_cap) or 75))
+        say('bags read: ' .. bag_list(scan))
+        say(string.format('held scrolls: %d', held_count(scan and scan.held)))
         say('last error: ' .. tostring(st.last_error or 'none'))
         if CORE == nil then say('spells_core.lua is missing: no rows can be built') end
     else
