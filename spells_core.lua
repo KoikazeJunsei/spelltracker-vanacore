@@ -53,7 +53,10 @@ end
 -- is not something a caller can rely on, and a badge that silently reorders when someone adds a tag is a regression
 -- nobody would notice. wizardoll leads because in ACE it is the path a player actually takes; sots last because it is
 -- the rarest. learn sits near the end too: a blue spell is learnt, not bought.
-local TAG_ORDER = { 'wizardoll', 'shop', 'ah', 'drop', 'quest', 'bcnm', 'learn', 'sots' }
+-- wizardoll sits LAST, not first. It used to lead, which made every scrolled spell in ACE read 'Wizardoll' and threw
+-- away the vendor, zone and price the generator had just read for it; the window appends the Wizardoll line to the
+-- tooltip instead, so the pill keeps the concrete, citable source and ACE players still see the Sparks route.
+local TAG_ORDER = { 'shop', 'ah', 'drop', 'quest', 'bcnm', 'learn', 'sots', 'wizardoll' }
 
 local function has(list, want)
     if list == nil then return false end

@@ -408,8 +408,12 @@ local function draw_row(dl, x0, y0, rw, row, i)
     local icon_name = tostring(badge.icon or 'question')
     local note = tostring(row.note or badge.note or '')
     local src = tostring(row.src or '')
-    local tip = note .. (src ~= '' and ('  (' .. src .. ')') or '')
-    if #tip > 220 then tip = tip:sub(1, 217) .. '...' end
+    -- ACE's Sparks shortcut is worth a line but not the pill: the pill names the vendor/drop the source table cites
+    -- (spells_core's TAG_ORDER), and this says the same spell can also be bought from the Wizardoll NPC
+    local wiz = (cfg.mode == 'ace' and #(row.tags or {}) > 0)
+        and '  -  ACE: the Wizardoll NPC also sells it for Sparks of Eminence' or ''
+    local tip = note .. wiz .. (src ~= '' and ('  (' .. src .. ')') or '')
+    if #tip > 260 then tip = tip:sub(1, 257) .. '...' end
 
     local tw, th = U.measure(label, F.semi, T.tiny)
     local pad = S(8)
@@ -655,9 +659,12 @@ listen('present', function ()
 end)
 
 listen('load', function ()
+    -- the theme files first: a player's own themes\<id>.lua is not in THEME_BY_ID until load_theme_files runs, so
+    -- checking the saved id before it would silently fall back to aurora for a theme that exists (AH does the same,
+    -- auctionhouse-vanacore.lua:4040)
+    pcall(U.load_theme_files)
     local theme = cfg.theme or 'aurora'
     if U.THEME_BY_ID[theme] == nil then theme = 'aurora' end
-    pcall(U.load_theme_files)
     U.apply_theme(theme)
     if PAD ~= nil then pcall(PAD.setup, 'spelltracker', U) end
     pcall(vana.log, 'spelltracker-vanacore ' .. addon.version .. ' loaded'
