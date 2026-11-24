@@ -220,6 +220,50 @@ function C.held(slots)
     return out
 end
 
+-- What the scroll ledger says is stored, keyed by lower-cased spell name exactly like C.held()'s map, so a row can
+-- look itself up with the same one step. The server does not send quantities - one bit per scroll - so this is a set
+-- of names, never a count.
+--
+-- The flattening is Trove's (legacy/ashita/addons/trove/plugins/scrolls.lua:116-118): page k of the answer is
+-- (pages in every category before i) + j for category i, page j. Getting it wrong shifts every category after the
+-- first and marks the wrong spells, so it is arithmetic on the table's own shape, not an index the answer carries.
+-- Bit b of a page's uint32 is entry b+1 of that page, decoded without a bit library because the client's LuaJIT
+-- has one but this module must run under a plain interpreter too: floor(mask / 2^b) % 2. Masks arrive as Lua
+-- numbers up to 2^32-1, which a double holds exactly.
+--
+-- Every guard here is a shape the server can actually send, and none of them is an error: a nil or absent mask list
+-- is "no answer yet" (an empty set, not a claim that nothing is stored), a page index past the end of the answer is
+-- skipped, a page longer than 32 entries can only encode its first 32 (a uint32 has 32 bits, so the rest are
+-- silently unreachable and are ignored rather than indexed), and a ledger that names the same spell twice sets the
+-- same key twice.
+function C.ledger_stored(ledger, masks)
+    local out = {}
+    if type(ledger) ~= 'table' or type(masks) ~= 'table' then return out end
+    local offset = 0
+    for c = 1, #ledger do
+        local cat = ledger[c]
+        local pages = (type(cat) == 'table' and type(cat.pages) == 'table') and cat.pages or {}
+        for j = 1, #pages do
+            local mask = tonumber(masks[offset + j])
+            local page = pages[j]
+            if mask ~= nil and mask > 0 and type(page) == 'table' then
+                local n = #page
+                if n > 32 then n = 32 end
+                for b = 0, n - 1 do
+                    if math.floor(mask / 2 ^ b) % 2 == 1 then
+                        local entry = page[b + 1]
+                        if type(entry) == 'table' and type(entry[1]) == 'string' and entry[1] ~= '' then
+                            out[entry[1]:lower()] = true
+                        end
+                    end
+                end
+            end
+        end
+        offset = offset + #pages
+    end
+    return out
+end
+
 local function name_has(words, name)
     if #words == 0 then return true end
     local n = (name or ''):lower()
@@ -270,6 +314,9 @@ function C.rows(spells, opts)
     -- wants the whole list simply does not pass them.
     local only_now = opts.only_now == true
     local held = opts.held
+    -- the ledger's answer, a set of lower-cased names (C.ledger_stored). Like held it only decorates: it never
+    -- narrows, never reorders and never touches the skill/query/learned filters.
+    local stored = opts.stored
 
     for i = 1, #list do
         local sp = list[i]
@@ -311,6 +358,10 @@ function C.rows(spells, opts)
                         for j = 1, #(in_bag.bags or {}) do bags[j] = in_bag.bags[j] end
                         row.held = { bag = in_bag.bag, count = in_bag.count, bags = bags }
                     end
+                    -- the ledger marks a spell whose scroll sits at Gramateus or in the box. A bare boolean on
+                    -- purpose: the answer carries one bit per scroll and no quantity, so row.stored must not grow a
+                    -- count the window could print.
+                    if stored ~= nil and stored[(sp.name or ''):lower()] then row.stored = true end
                     row.short_job = C.job_short(main ~= nil and opts.job or opts.sub_job)
                     -- the raw tag list stays on the row for a tooltip that wants to list every path; the single
                     -- resolved tag is what the pill draws
@@ -348,7 +399,7 @@ function C.urls(name, scroll)
 end
 
 function C.counts(rows)
-    local c = { total = 0, learned = 0, missing = 0, unreachable = 0, held = 0 }
+    local c = { total = 0, learned = 0, missing = 0, unreachable = 0, held = 0, stored = 0 }
     local list = rows or {}
     for i = 1, #list do
         local r = list[i]
@@ -358,6 +409,9 @@ function C.counts(rows)
         -- how many of these rows have the scroll already: the window's header line counts against the whole job
         -- list, so it must not fall when a search or a pill narrows the view
         if r.held ~= nil then c.held = c.held + 1 end
+        -- and how many the server's ledger says are stored. Two facts, two counts: a scroll in a bag is read from
+        -- memory, a stored one was asked about, and a player can have either without the other.
+        if r.stored then c.stored = c.stored + 1 end
     end
     return c
 end

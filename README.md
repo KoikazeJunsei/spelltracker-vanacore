@@ -25,6 +25,7 @@ Clawmark, VanaStore), so it follows the theme, the window scale, the opacity and
 /spells now on|off          only the spells you could cast at your level right now
 /spells held on|off         only the spells whose scroll is already in one of your bags
 /spells rescan              read your bags again now (they are re-read every 4 seconds anyway)
+/spells sync                ask the server for the scroll ledger again (Gramateus / the box)
 /spells sound on|off        the bell as the window opens
 /spells debug               the row counts, the bags it read, and the last error, in chat
 ```
@@ -58,24 +59,27 @@ purpose: as a pill it replaced every vendor, zone and price the table had just b
 
 ## "Do I already have this scroll?"
 
-The tracker reads every bag the client exposes and marks a spell whose scroll or plate is sitting in one of them: a bag
-icon with the count, a tooltip naming the bag, and a `N scrolls already in your bags` line in the header. `Usable now`
-and `In storage` are independent filters, so "castable and already bought" is two clicks.
+Two different questions, answered two different ways, and a row can wear both marks at once.
 
-The bags are the eighteen the client has - Inventory, Mog Safe, Storage, Temporary, Mog Locker, Satchel, Sack, Case,
-Mog Wardrobe 1 to 8, Mog Safe 2, Recycle Bin (`docs/addons/04-game-data.md`). Bags are re-read every four seconds and on
+**In a bag: read.** The tracker walks all eighteen containers the client has - Inventory, Mog Safe, Storage,
+Temporary items, Mog Locker, Satchel, Sack, Case, Mog Wardrobe 1 to 8, Mog Safe 2, Recycle Bin
+(`docs/addons/04-game-data.md`) - and marks a spell whose scroll or plate is in one of them. Green bag icon, the
+count when there is more than one, a tooltip naming the bag. Bags are re-read every four seconds and on
 `/spells rescan`.
 
-**The ephemeral box and Gramateus are a different question, and a bag scan cannot answer them.** They are not
-containers the client holds: VanaCore's own `Container` enum ends at 17 and every id above it is refused, which is why
-CatsEyeXI's Trove addon reads its ephemeral-box counts straight out of the synthesis packet (`trove/core/crafting.lua`)
-instead of from a bag. Scrolls are also not in the box - once `Decrypting Antiquity II` is done they are auto-transferred
-to **Gramateus in Upper Jeuno**, where you can see them but not take them back.
+**Stored at Gramateus or in the box: asked.** Those are not containers the client holds - VanaCore's `Container` enum
+ends at 17 - so this is a question for the server, and it is asked **once for the whole store**, not once per scroll.
+The addon sends CatsEyeXI's `0x1A4` tab-summary request (source 2, the scroll ledger: the same protocol Trove uses) and
+the answer is a bitmask per page: 19 uint32s, 512 scrolls, one bit each. A stored row gets a cyan vault icon with the
+tooltip `stored (Gramateus / the box)` - no count, because the ledger carries none.
 
-The server will answer that question per scroll: `!scroll <name>` reports whether it is stored in the box or at
-Gramateus. A following increment drives that command from the window (a per-row query and an explicit, spaced-out bulk
-sync parsed against the server's own reply lines). Until it lands, this window's storage check is the bags only, and it
-says so rather than implying it looked at the box.
+The page table that says which bit is which spell, `scroll_ledger.lua`, is Trove's generated file copied byte-identical
+(its own header: *"Order MUST match the server's page layout"*), so a resync cannot mark the wrong spells. The request
+goes out when the window opens and on `/spells sync`, at most once a minute. The answer is Crystal Warrior only: a
+non-CW character is told so once and the addon stops asking.
+
+`Usable now`, `In storage` and `Show learnt` are independent filters, so "castable, already bought, not learnt" is
+three clicks.
 
 ## Where the data comes from
 

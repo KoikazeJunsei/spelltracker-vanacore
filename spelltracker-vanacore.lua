@@ -17,9 +17,10 @@ In game:
   /spells learned on|off   show the spells already learnt, too
   /spells now on|off       only the spells you could cast this minute
   /spells held on|off      only the spells whose scroll is already in one of your bags
+  /spells sync             ask the server for the scroll ledger now (Crystal Warrior: Gramateus / the box)
   /spells rescan           read the bags again now instead of waiting for the cache
   /spells sound on|off     the bell as the window opens
-  /spells debug            the row counts, the bags it could read and the last error, in chat
+  /spells debug            the row counts, the bags and the ledger it could read, and the last error, in chat
 
 Click a spell's badge to search the CatsEyeXI database, its Wiki button for BG-Wiki, or double-click the row for the
 database. The window is drawn with the family's ui.lua kit, so it looks like the other VanaCore addons and follows the
@@ -64,6 +65,15 @@ do
     if ok and type(mod) == 'table' then SOURCES = mod end
 end
 
+-- scroll_ledger.lua is Trove's generated page table, copied byte-identical because its order must match the
+-- server's page layout (the server sends bitmasks, not names, so a reordered table marks the wrong spells). Soft like
+-- the others: without it the window still draws, it just has no way to say what is stored.
+local LEDGER = nil
+do
+    local ok, mod = pcall(require, 'scroll_ledger')
+    if ok and type(mod) == 'table' and #mod > 0 then LEDGER = mod end
+end
+
 -------------------------------------------------------------------------------
 -- Settings and state
 -------------------------------------------------------------------------------
@@ -91,12 +101,15 @@ local cfg = config.data
 local st = {
     open = false, anim = 0,
     query = { '' },
-    rows = {}, counts = { total = 0, learned = 0, missing = 0, unreachable = 0, held = 0 },
+    rows = {}, counts = { total = 0, learned = 0, missing = 0, unreachable = 0, held = 0, stored = 0 },
     cache_key = nil, spells = nil, items = nil,
     last_error = nil, focus_frames = 0,
     -- the bag scan is a separate, slower thing than the row build: it is cached by the clock and versioned, so a
     -- new scan (a scroll moved into the inventory) rebuilds the rows without a keystroke
     scan = nil, scan_at = nil, scan_gen = 0,
+    -- the scroll ledger: the last answer's uint32 per page, a generation so a new answer rebuilds the rows, whether
+    -- the server refused (non-Crystal-Warrior) and when we last asked (nil = never, the 60 s gate reads it)
+    masks = nil, ledger_gen = 0, ledger_locked = false, ledger_at = nil, ledger_asked = false,
 }
 
 local function say(text) pcall(vana.chat.write, '[Spells] ' .. text, 106) end
@@ -275,6 +288,21 @@ do
     local ok_q, q = pcall(U.fa, 'question')
     if ok_a and ok_q and type(a) == 'string' and a ~= q then BAG_ICON = 'bag-shopping' end
 end
+-- the marker for a scroll the server's ledger says is stored at Gramateus or in the box. Same probe, one more step
+-- down the list ('vault', then 'box-archive', then the plain 'archive'): this copy of the kit's FA table has neither
+-- of the first two, and fa() answers an unknown name with the question mark, which is why each name is compared
+-- against that answer instead of being assumed to exist.
+local VAULT_ICON = 'archive'
+do
+    local ok_q, q = pcall(U.fa, 'question')
+    local names = { 'vault', 'box-archive' }
+    if ok_q and type(q) == 'string' then
+        for i = 1, #names do
+            local ok_n, g = pcall(U.fa, names[i])
+            if ok_n and type(g) == 'string' and g ~= q then VAULT_ICON = names[i] break end
+        end
+    end
+end
 
 -- item id -> name, or false where the client had none: a bag holds item ids, and the same scroll sits in the same
 -- slot every scan, so the name is looked up once per item per session rather than once per bag slot per scan
@@ -312,9 +340,10 @@ end
 
 -- The ephemeral box is not in the client's container set, so a memory scan cannot see it however far this loop runs:
 -- the Container enum ends at 17 (abi.hpp:1198) and CatsEyeXI's own Trove reads the box out of the synthesis packet
--- rather than a bag (legacy/ashita/addons/trove/core/crafting.lua:780). It can only be ASKED about - the server
--- answers the !scroll command with its 'currently in storage' line - so this file claims nothing about the box
--- either way, and a later increment is what may drive that query. Do not 'fix' this by adding an id to the loop.
+-- rather than a bag (legacy/ashita/addons/trove/core/crafting.lua:780). It can only be ASKED about - this file asks
+-- with the scroll ledger's 0x1A4 summary (below), which answers for Gramateus and the box together - so nothing in
+-- this bag walk claims anything about either store, and a row marked from the ledger says so in its own tooltip.
+-- Do not 'fix' this by adding an id to the loop.
 --
 -- Reads every bag the character owns and turns the scrolls among them into spells_core.held()'s map. The whole walk
 -- is inside one pcall: a client without containers, a bag that errors mid-walk and a character at the select screen
@@ -387,6 +416,128 @@ local function bag_list(scan)
 end
 
 -------------------------------------------------------------------------------
+-- The scroll ledger (Trove's 0x1A4 tab summary)
+-------------------------------------------------------------------------------
+
+-- The protocol, read off legacy/ashita/addons/trove/plugins/scrolls.lua:30-46 (request) and :326-348 (answer):
+--   request  0x1A4, 64 bytes, byte 5 = 13 (C2S_TAB_SUMMARY), byte 7 = 2 (TAB_SOURCE_SCROLLS), sent once
+--   answer   action 12 (S2C_TAB_SUMMARY), byte 6 = page count, byte 7 = source (must be 2),
+--            then page-count little-endian uint32s from byte 9; bit b = entry b+1 of that page is stored
+--   action 4 (S2C_LOCKED)  the answer to a character that is not a Crystal Warrior: the ledger is CW only
+-- That is ONE packet for the whole store, which is why it beats a per-scroll chat query. It costs `sends_packets` in
+-- the policy scan (tools/addon_vet/scan.py), the same class of addon Trove is, and docs/addons/10-packets.md:120 is
+-- the citation for the rule that matters: the server treats an injected packet as the player's.
+local PACKET_LEDGER = 0x1A4
+local C2S_TAB_SUMMARY = 13
+local S2C_TAB_SUMMARY = 12
+local S2C_LOCKED = 4
+local TAB_SOURCE_SCROLLS = 2
+-- one ask a minute. The answer only changes when the player stores a scroll, and nothing here is worth a packet per
+-- frame; /spells sync is the way past the gate when the player knows it has changed.
+local LEDGER_SECONDS = 60
+
+-- the client's clock, or nil when it cannot be read: every gate below treats a nil clock as "do not ask", which
+-- costs a marker rather than a packet loop
+local function clock_now()
+    local ok, t = pcall(U.clock)
+    if ok and tonumber(t) then return tonumber(t) end
+    return nil
+end
+
+local function ledger_payload()
+    local b = {}
+    for i = 1, 64 do b[i] = 0 end
+    b[5] = C2S_TAB_SUMMARY
+    b[7] = TAB_SOURCE_SCROLLS
+    local out = {}
+    for i = 1, 64 do out[i] = string.char(b[i]) end
+    return table.concat(out)
+end
+
+-- Returns true when a request actually went out. Refuses, never raises: no LEDGER (a checkout without the table),
+-- a locked ledger, no packets surface, no character in the world, and the 60 s gate unless force is set.
+local function request_ledger(force)
+    if type(LEDGER) ~= 'table' or #LEDGER < 1 then return false end
+    if st.ledger_locked then return false end
+    local pk = nil
+    do
+        local ok, t = pcall(function () return vana.packets end)
+        if ok then pk = t end
+    end
+    if type(pk) ~= 'table' or type(pk.inject) ~= 'function' then return false end
+    local me = current_player()
+    if me == nil or (tonumber(me.job) or 0) <= 0 then return false end
+    local now = clock_now()
+    if not force then
+        if now == nil then return false end
+        if st.ledger_at ~= nil and (now - st.ledger_at) < LEDGER_SECONDS then return false end
+    end
+    -- The call is written out rather than taken out of pk: tools/addon_vet/scan.py matches the symbol, and an addon
+    -- that sends packets has to show up as one in the policy scan instead of slipping past it. The pcall is what
+    -- keeps a client without the surface from raising into the frame that opened the window.
+    local ok_send, err = pcall(function ()
+        vana.packets.inject(false, PACKET_LEDGER, ledger_payload())
+    end)
+    if not ok_send then
+        -- recorded as asked anyway: a failing inject that is retried every frame is a tight loop into the game
+        fail('ledger', err)
+        if now ~= nil then st.ledger_at = now end
+        return false
+    end
+    st.ledger_at = now
+    st.ledger_asked = true
+    return true
+end
+
+-- The masks out of one answer, or nil where the payload is not a complete answer. nil is not an error and not an
+-- empty answer: the caller leaves the last good masks in place, because a half-read packet that blanked them would
+-- mark every stored scroll as missing.
+local function ledger_masks(data)
+    if type(data) ~= 'string' or #data < 9 then return nil end
+    if data:byte(5) ~= S2C_TAB_SUMMARY then return nil end
+    if data:byte(7) ~= TAB_SOURCE_SCROLLS then return nil end
+    local count = data:byte(6)
+    if count == nil then return nil end
+    local masks = {}
+    local pos = 9
+    for i = 1, count do
+        local b1, b2, b3, b4 = data:byte(pos, pos + 3)
+        if b1 == nil or b2 == nil or b3 == nil or b4 == nil then return nil end
+        masks[i] = b1 + b2 * 256 + b3 * 65536 + b4 * 16777216
+        pos = pos + 4
+    end
+    return masks
+end
+
+-- One packet_in handler for 0x1A4, called inside a pcall: a malformed payload has to leave the window drawing.
+-- e.data is the packet as a string with its 4-byte header first (docs/addons/10-packets.md:37-50); an id VanaCore
+-- has no field table for can arrive with e.data nil, so the last buffer of the same id is parsed instead.
+local function ledger_packet(e)
+    if type(e) ~= 'table' or e.id ~= PACKET_LEDGER then return end
+    local data = e.data
+    if type(data) ~= 'string' then
+        -- the fallback is inside its own pcall so a client without the packets surface records nothing: this runs in
+        -- a packet handler, and a raise here would be the handler's fault, not the packet's
+        local got, last = pcall(function () return vana.packets.last(true, PACKET_LEDGER) end)
+        if got and type(last) == 'string' then data = last end
+    end
+    if type(data) ~= 'string' or #data < 7 then return end
+    if data:byte(5) == S2C_LOCKED then
+        -- said once: the server repeats this answer to every ask, and the addon stops asking after the first
+        if not st.ledger_locked then
+            st.ledger_locked = true
+            say('the scroll ledger is Crystal Warrior only: nothing will be marked as stored')
+        end
+        return
+    end
+    local masks = ledger_masks(data)
+    if masks == nil then return end
+    st.masks = masks
+    st.ledger_gen = (st.ledger_gen or 0) + 1
+    st.cache_key = nil
+end
+
+-------------------------------------------------------------------------------
 -- The rows
 -------------------------------------------------------------------------------
 
@@ -399,11 +550,14 @@ local function rebuild(me, bits, scan)
         me.job, me.level, me.sub_job, me.sub_level,
         tostring(cfg.mode), tostring(cfg.show_learned), tostring(cfg.skill), st.query[1] or '', bits or '',
         tostring(cfg.only_now), tostring(cfg.held_only), tostring(st.scan_gen or 0),
+        -- the generation, not just the page count: a second answer with the same 19 pages is a different answer,
+        -- and a same-shaped one (a scroll stored today) would otherwise leave yesterday's markers on the rows
+        tostring(st.ledger_gen or 0),
     }, '|')
     if key == st.cache_key then return end
     st.cache_key = key
     st.rows = {}
-    st.counts = { total = 0, learned = 0, missing = 0, unreachable = 0, held = 0 }
+    st.counts = { total = 0, learned = 0, missing = 0, unreachable = 0, held = 0, stored = 0 }
 
     local spells = spell_table()
     if spells ~= nil then spells = spell_array(spells) end
@@ -412,6 +566,13 @@ local function rebuild(me, bits, scan)
     -- spells_core reads sources by spell id, so it wants the generated map, not the module around it
     local sources = (SOURCES and type(SOURCES.spells) == 'table') and SOURCES.spells or {}
     local cap = tonumber(data.level_cap) or 75
+    -- the ledger's answer, folded into a name set. nil (no table, no answer yet) is passed as nil on purpose: an
+    -- empty set would be a claim that nothing is stored, and spells_core can tell the two apart
+    local stored = nil
+    if type(LEDGER) == 'table' and type(st.masks) == 'table' and type(CORE.ledger_stored) == 'function' then
+        local ok_l, set = pcall(CORE.ledger_stored, LEDGER, st.masks)
+        if ok_l and type(set) == 'table' then stored = set end
+    end
 
     -- the counts are the whole job's list, not the filtered view: '12 to learn' should not fall when a search narrows
     -- the view, and the header's 'N scrolls already in your bags' is counted against the same list for the same
@@ -419,6 +580,7 @@ local function rebuild(me, bits, scan)
     local ok_all, all = pcall(CORE.rows, spells, {
         job = me.job, level = me.level, sub_job = me.sub_job, sub_level = me.sub_level,
         bits = bits, show_learned = true, mode = cfg.mode, data = data, sources = sources, cap = cap, held = held,
+        stored = stored,
     })
     if ok_all and type(all) == 'table' then
         local ok_c, counts = pcall(CORE.counts, all)
@@ -433,7 +595,7 @@ local function rebuild(me, bits, scan)
         job = me.job, level = me.level, sub_job = me.sub_job, sub_level = me.sub_level,
         bits = bits, query = st.query[1] ~= '' and st.query[1] or nil, skill = skill,
         mode = cfg.mode, show_learned = cfg.show_learned == true, data = data, sources = sources, cap = cap,
-        held = held, only_now = cfg.only_now == true,
+        held = held, only_now = cfg.only_now == true, stored = stored,
     })
     if ok_rows and type(rows) == 'table' then
         -- 'in storage' is the window's own filter, not spells_core's: it is one pass over the rows the core just
@@ -500,6 +662,13 @@ local function set_open(on)
     if on then
         st.focus_frames = 2
         if cfg.open_sound ~= false then play_bell() end
+        -- ask for the ledger when the window opens, not every frame: request_ledger's 60 s gate is what keeps a
+        -- player who toggles the window ten times from spending ten packets
+        st.ledger_asked = true
+        request_ledger(false)
+    else
+        -- a fresh opening asks again (the 60 s gate in request_ledger is what decides whether anything is sent)
+        st.ledger_asked = false
     end
 end
 
@@ -609,15 +778,20 @@ local function draw_row(dl, x0, y0, rw, row, i)
     local wsize = S(22)
     local wx = x0 + rw - wsize - S(4)
     local wy = y0 + (rowh - wsize) / 2
-    -- the bag marker sits between the pill and the Wiki button, and the pill yields the room for it: which bag the
-    -- scroll is in is worth a column, the Wiki button is not worth moving
+    -- two markers can share the strip between the pill and the Wiki button: the ledger's stored mark on the left and
+    -- the bag mark to its right, because "stored at Gramateus" and "in one of your bags" are different facts and a
+    -- row can carry either without the other. The pill yields the room for both (a row without a stored mark gets
+    -- exactly the geometry it had before).
     local held = row.held
     local held_n = 0
-    local mark_w = 0
+    local bag_w = 0
     if type(held) == 'table' then
         held_n = tonumber(held.count) or 1
-        mark_w = S(18) + (held_n > 1 and S(12) or 0)
+        bag_w = S(18) + (held_n > 1 and S(12) or 0)
     end
+    local stored = row.stored == true
+    local store_w = stored and S(18) or 0
+    local mark_w = bag_w + store_w
     local pillx = wx - S(8) - pillw - mark_w
     local pilly = y0 + (rowh - pillh) / 2
 
@@ -667,10 +841,23 @@ local function draw_row(dl, x0, y0, rw, row, i)
         U.with_font(F.text, T.small, imgui.SetTooltip, tip)
     end
 
+    -- the markers right of the pill: the stored one first, then the bag one, whose geometry is untouched for a row
+    -- without a stored mark. Both are hit-tested so the two tooltips never share a pixel.
+    local strip_x = pillx + pillw + S(2)
+    if stored then
+        imgui.SetCursorScreenPos({ strip_x, y0 })
+        local _, store_hovered = U.hit(key .. 's', store_w, rowh, S(4))
+        U.icon(dl, strip_x + S(8), cy, VAULT_ICON, P.cyan, T.tiny)
+        if store_hovered then
+            -- named, never counted: the ledger answers one bit per scroll and a number here would be invented
+            U.with_font(F.text, T.small, imgui.SetTooltip, 'stored (Gramateus / the box)')
+        end
+    end
+
     -- the scroll is already in a bag: the marker names the bag on hover, and says where the rest are when the player
     -- has the same spell in more than one (a copy in the satchel is why 'in your Inventory' alone is not the answer)
     if type(held) == 'table' then
-        local mx = pillx + pillw + S(2)
+        local mx = strip_x + store_w
         local mw_box = math.max(1, wx - S(2) - mx)
         imgui.SetCursorScreenPos({ mx, y0 })
         local _, mark_hovered = U.hit(key .. 'b', mw_box, rowh, S(4))
@@ -762,14 +949,28 @@ local function draw_window(me)
             -- (st.counts), and only falls back to the smaller 'showing' number when a filter is on and the rows are
             -- still visible: narrowing the search must not look as if the scrolls left the bags.
             local held_total = tonumber(counts.held) or 0
+            -- where the next header line would start. Measured from the kit, never guessed: the header has a hard
+            -- right edge (the close button) and the lines share one row at the 700..880 px width.
+            local hx = x + S(60) + U.measure(line, F.text, T.small) + S(14)
             if held_total > 0 then
                 local held_shown = 0
                 local shown_rows = st.rows or {}
                 for i = 1, #shown_rows do if shown_rows[i].held ~= nil then held_shown = held_shown + 1 end end
                 local n = held_shown > 0 and held_shown or held_total
-                local lw = U.measure(line, F.text, T.small)
-                U.text(dl, x + S(60) + lw + S(14), y + S(44),
-                    string.format('%d scrolls already in your bags', n), P.accent, F.semi, T.small)
+                local bag_text = string.format('%d scrolls already in your bags', n)
+                U.text(dl, hx, y + S(44), bag_text, P.accent, F.semi, T.small)
+                hx = hx + U.measure(bag_text, F.semi, T.small) + S(14)
+            end
+            -- what the server's ledger says is stored at Gramateus / in the box: a second, separate count, because a
+            -- scroll can be stored and not held (and the other way round). Dropped, not clipped, if it would run
+            -- under the close button: a number half-hidden behind a glyph is worse than no number.
+            local stored_total = tonumber(counts.stored) or 0
+            if stored_total > 0 then
+                local store_text = string.format('%d stored', stored_total)
+                local store_w = U.measure(store_text, F.semi, T.small)
+                if hx + store_w <= x + w - S(42) - S(12) then
+                    U.text(dl, hx, y + S(44), store_text, P.accent, F.semi, T.small)
+                end
             end
             if U.icon_button(dl, '##st_close', x + w - S(42), y + S(14), S(26), 'xmark', P.dim, 'Close') then
                 set_open(false)
@@ -892,6 +1093,12 @@ local function tick()
         U.anim.pad_shown = ok_shown and pad_shown == true
     end
     local me = current_player()
+    -- the window can be open without set_open having run in this frame (a saved-open restore): the first drawn frame
+    -- while open is the other place the ledger is asked for, and st.ledger_asked keeps it to one try an opening
+    if st.open and not st.ledger_asked then
+        st.ledger_asked = true
+        request_ledger(false)
+    end
     -- the bags are read before the rows: an empty bag, a nil container and a character at the select screen all have
     -- to end up with unheld rows, never with a frame that raised
     rebuild(me, game_bits(), scan_bags())
@@ -907,6 +1114,23 @@ listen('present', function ()
     local ok, err = pcall(tick)
     if not ok then fail('present', err) end
 end)
+
+-- the ledger's answer. Registered unconditionally: a pcall around the parse means one malformed 0x1A4 can never
+-- take the frame that reads it down, and the handler checks the id before touching a byte. The registration is
+-- written out rather than routed through listen() above for the same reason the request is: the policy scan's
+-- packet_handlers signal matches the symbol, and an addon that reads every packet should say so in its scan.
+do
+    local ok = pcall(function ()
+        vana.events.on('packet_in', function (e)
+            local parsed, err = pcall(ledger_packet, e)
+            if not parsed then fail('ledger', err) end
+        end)
+    end)
+    if not ok then
+        -- no packet surface: the window still draws, it just never learns what is stored
+        fail('ledger', 'this client has no vana.events.on')
+    end
+end
 
 listen('load', function ()
     -- the theme files first: a player's own themes\<id>.lua is not in THEME_BY_ID until load_theme_files runs, so
@@ -931,7 +1155,7 @@ end)
 -- Commands
 -------------------------------------------------------------------------------
 
-local HELP = '/spells [toggle|show|hide|reset|mode ace|cw|wew|theme <id>|scale <50-300>|learned on|off|now on|off|held on|off|rescan|sound on|off|debug]'
+local HELP = '/spells [toggle|show|hide|reset|mode ace|cw|wew|theme <id>|scale <50-300>|learned on|off|now on|off|held on|off|sync|rescan|sound on|off|debug]'
 
 listen('command', function (e)
     local words = {}
@@ -998,6 +1222,17 @@ listen('command', function (e)
         else
             say('/spells held on|off')
         end
+    elseif what == 'sync' then
+        -- the owner's way past the 60 s gate: they just stored a scroll and want the marker now
+        if LEDGER == nil then
+            say('scroll_ledger.lua is missing: the server can be asked, but there is no table to decode the answer with')
+        elseif st.ledger_locked then
+            say('the scroll ledger is Crystal Warrior only: nothing to sync for this character')
+        elseif request_ledger(true) then
+            say('asked the server for the scroll ledger (one packet, 0x1A4): the markers update when it answers')
+        else
+            say('no request went out: no character in the world, or the client has no packet surface')
+        end
     elseif what == 'rescan' then
         -- the owner's way out of the 4 s cache: they just moved a scroll and want the row marked now
         st.scan_at = nil
@@ -1027,6 +1262,17 @@ listen('command', function (e)
             tonumber(c.unreachable) or 0, tonumber(DATA and DATA.level_cap) or 75))
         say('bags read: ' .. bag_list(scan))
         say(string.format('held scrolls: %d', held_count(scan and scan.held)))
+        -- the ledger, in the three facts that explain a missing or wrong marker: how many pages came back, how many
+        -- rows that marks, and whether the server refused. 'asked' is on the client's clock, not a guess.
+        local asked = 'never'
+        if st.ledger_at ~= nil then
+            local now = clock_now()
+            if now ~= nil then asked = string.format('%ds ago', math.max(0, math.floor(now - st.ledger_at)))
+            else asked = 'yes' end
+        end
+        say(string.format('ledger: %d pages, %d stored, locked=%s, asked %s',
+            #(st.masks or {}), tonumber((st.counts or {}).stored) or 0,
+            st.ledger_locked and 'yes' or 'no', asked))
         say('last error: ' .. tostring(st.last_error or 'none'))
         if CORE == nil then say('spells_core.lua is missing: no rows can be built') end
     else
