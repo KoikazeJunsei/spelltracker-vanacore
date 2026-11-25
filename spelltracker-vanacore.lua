@@ -32,7 +32,7 @@ theme, the scale and the controller.
 
 addon.name    = 'spelltracker-vanacore'
 addon.author  = 'koikaze'
-addon.version = '0.1.1'
+addon.version = '0.2.0'
 addon.desc    = 'SpellTracker: the spells this job can still learn, with where each one comes from.'
 
 local imgui = vana.imgui
