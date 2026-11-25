@@ -17,10 +17,13 @@ In game:
   /spells learned on|off   show the spells already learnt, too
   /spells now on|off       only the spells you could cast this minute
   /spells held on|off      only the spells whose scroll is already in one of your bags
+  /spells here             what this job still needs in the zone you are in, with where to get each one
+  /spells alerts on|off    the zone-in notice on or off (one toast and one chat line, never twice for one zone)
+  /spells alerts shop|drop|bcnm on|off   silence one of the three kinds of place
   /spells sync             ask the server for the scroll ledger now (Crystal Warrior: Gramateus / the box)
   /spells rescan           read the bags again now instead of waiting for the cache
   /spells sound on|off     the bell as the window opens
-  /spells debug            the row counts, the bags and the ledger it could read, and the last error, in chat
+  /spells debug            the row counts, the bags, the ledger and the zone it could read, and the last error, in chat
 
 Click a spell's badge to search the CatsEyeXI database, its Wiki button for BG-Wiki, or double-click the row for the
 database. The window is drawn with the family's ui.lua kit, so it looks like the other VanaCore addons and follows the
@@ -83,6 +86,9 @@ local DEFAULTS = {
     -- the two Phase-2 filters: 'usable now' and 'in storage'. Per character like the rest, because a mule and a
     -- main want different answers out of the same window.
     only_now = false, held_only = false,
+    -- the zone alerts (Phase 4). One master switch and one per kind of place, so a player who never wants to hear
+    -- about a battlefield can keep the vendor notices. Per character with everything else.
+    zone_alerts = true, alert_shop = true, alert_drop = true, alert_bcnm = true,
     x = nil, y = nil, opacity = 100, open_sound = true,
 }
 
@@ -112,6 +118,12 @@ local st = {
     masks = nil, ledger_gen = 0, ledger_locked = false, ledger_at = nil, ledger_asked = false,
     -- whether the window's position has been placed this session: once it has, ImGui owns it and a drag sticks
     pos_placed = false,
+    -- the zone alerts: the zone index built once from spell_sources, the last zone key that was announced (a Mog House
+    -- in-and-out re-raises zone_change with the same zone), the last zone id any event carried (the fallback for
+    -- /spells here), and the plain row list the alerts read - a second list, so the window's own filters cannot
+    -- change what is announced
+    zone_idx = nil, last_zone_key = nil, last_zone_id = nil,
+    plain_rows = {}, plain_key = nil,
 }
 
 local function say(text) pcall(vana.chat.write, '[Spells] ' .. text, 106) end
@@ -546,20 +558,35 @@ end
 -- rebuilding is keyed on everything that can change a row: the character's jobs, the bitfield, the filters. Typing in
 -- the search box thus costs one rebuild per keystroke, not one per frame. The scan generation is in the key because a
 -- new bag scan changes row.held without changing anything else.
-local function rebuild(me, bits, scan)
+--
+-- One builder, two lists. `plain` is the zone alerts' list: the same rows with the view's own filters OFF (nothing
+-- learnt, no search, no skill pill, no 'usable now', no 'in storage'), because a search box is a way of looking at
+-- the list and never a claim about what the player still needs - announcing 'Lower Jeuno: {the one spell matching
+-- your query}' would be a lie about the zone. Each list keeps its own cache key, so one build never blanks the other.
+local function rebuild(me, bits, scan, plain)
+    local view = plain ~= true
     local held = (scan and scan.held) or nil
     local key = table.concat({
+        view and 'view' or 'plain',
         me.job, me.level, me.sub_job, me.sub_level,
-        tostring(cfg.mode), tostring(cfg.show_learned), tostring(cfg.skill), st.query[1] or '', bits or '',
-        tostring(cfg.only_now), tostring(cfg.held_only), tostring(st.scan_gen or 0),
+        tostring(cfg.mode), tostring(view and cfg.show_learned == true),
+        tostring(view and cfg.skill or 'all'), (view and st.query[1]) or '', bits or '',
+        tostring(view and cfg.only_now == true), tostring(view and cfg.held_only == true),
+        tostring(st.scan_gen or 0),
         -- the generation, not just the page count: a second answer with the same 19 pages is a different answer,
         -- and a same-shaped one (a scroll stored today) would otherwise leave yesterday's markers on the rows
         tostring(st.ledger_gen or 0),
     }, '|')
-    if key == st.cache_key then return end
-    st.cache_key = key
-    st.rows = {}
-    st.counts = { total = 0, learned = 0, missing = 0, unreachable = 0, held = 0, stored = 0 }
+    if view then
+        if key == st.cache_key then return end
+        st.cache_key = key
+        st.rows = {}
+        st.counts = { total = 0, learned = 0, missing = 0, unreachable = 0, held = 0, stored = 0 }
+    else
+        if key == st.plain_key then return end
+        st.plain_key = key
+        st.plain_rows = {}
+    end
 
     local spells = spell_table()
     if spells ~= nil then spells = spell_array(spells) end
@@ -579,37 +606,39 @@ local function rebuild(me, bits, scan)
     -- the counts are the whole job's list, not the filtered view: '12 to learn' should not fall when a search narrows
     -- the view, and the header's 'N scrolls already in your bags' is counted against the same list for the same
     -- reason (a filter must not look as if the scrolls left the bags)
-    local ok_all, all = pcall(CORE.rows, spells, {
-        job = me.job, level = me.level, sub_job = me.sub_job, sub_level = me.sub_level,
-        bits = bits, show_learned = true, mode = cfg.mode, data = data, sources = sources, cap = cap, held = held,
-        stored = stored,
-    })
-    if ok_all and type(all) == 'table' then
-        local ok_c, counts = pcall(CORE.counts, all)
-        if ok_c and type(counts) == 'table' then st.counts = counts end
-    elseif not ok_all then
-        fail('rows', all)
+    if view then
+        local ok_all, all = pcall(CORE.rows, spells, {
+            job = me.job, level = me.level, sub_job = me.sub_job, sub_level = me.sub_level,
+            bits = bits, show_learned = true, mode = cfg.mode, data = data, sources = sources, cap = cap, held = held,
+            stored = stored,
+        })
+        if ok_all and type(all) == 'table' then
+            local ok_c, counts = pcall(CORE.counts, all)
+            if ok_c and type(counts) == 'table' then st.counts = counts end
+        elseif not ok_all then
+            fail('rows', all)
+        end
     end
 
     local skill = nil
-    if cfg.skill ~= nil and cfg.skill ~= 'all' then skill = cfg.skill end
+    if view and cfg.skill ~= nil and cfg.skill ~= 'all' then skill = cfg.skill end
     local ok_rows, rows = pcall(CORE.rows, spells, {
         job = me.job, level = me.level, sub_job = me.sub_job, sub_level = me.sub_level,
-        bits = bits, query = st.query[1] ~= '' and st.query[1] or nil, skill = skill,
-        mode = cfg.mode, show_learned = cfg.show_learned == true, data = data, sources = sources, cap = cap,
-        held = held, only_now = cfg.only_now == true, stored = stored,
+        bits = bits, query = view and st.query[1] ~= '' and st.query[1] or nil, skill = skill,
+        mode = cfg.mode, show_learned = view and cfg.show_learned == true, data = data, sources = sources, cap = cap,
+        held = held, only_now = view and cfg.only_now == true, stored = stored,
     })
     if ok_rows and type(rows) == 'table' then
         -- 'in storage' is the window's own filter, not spells_core's: it is one pass over the rows the core just
         -- built and sorted, so the order the player sees is untouched
-        if cfg.held_only == true then
+        if view and cfg.held_only == true then
             local with_scroll = {}
             for i = 1, #rows do
                 if rows[i].held ~= nil then with_scroll[#with_scroll + 1] = rows[i] end
             end
             rows = with_scroll
         end
-        st.rows = rows
+        if view then st.rows = rows else st.plain_rows = rows end
     else
         fail('rows', rows)
     end
@@ -651,6 +680,215 @@ end
 local function open_wiki(row)
     local urls = row_urls(row)
     open_link(urls and urls.wiki or nil)
+end
+
+-------------------------------------------------------------------------------
+-- Zone alerts
+-------------------------------------------------------------------------------
+
+-- Where the generated source table says each spell's scroll is sold, dropped or fought for, grouped by zone key.
+-- Built once (lazily: a session that never zones in costs nothing) and latched, because spell_sources.lua cannot
+-- change while the addon is loaded. Every failure - no CORE, no SOURCES, a CORE.zone_index that raises or answers
+-- something that is not a table - is 'no zones to announce', never an error the player sees: the window still draws.
+local function zone_index()
+    if type(st.zone_idx) == 'table' then return st.zone_idx end
+    if CORE == nil or type(CORE.zone_index) ~= 'function' then return nil end
+    if SOURCES == nil or type(SOURCES.spells) ~= 'table' then return nil end
+    local ok, idx = pcall(CORE.zone_index, SOURCES.spells)
+    if not ok then
+        fail('zones', idx)
+        return nil
+    end
+    if type(idx) ~= 'table' then return nil end
+    st.zone_idx = idx
+    return idx
+end
+
+-- The game's own name for a zone id. nil for everything that is not one: no vana.gamedata (a client without DATs),
+-- an id past the table, id 0 ('unknown'), and a zone the table has no name for all cost the alert and nothing else.
+local function zone_name(id)
+    local zone = tonumber(id)
+    if zone == nil or zone <= 0 then return nil end
+    local ok, row = pcall(function () return vana.gamedata.zones[zone] end)
+    if ok and type(row) == 'table' and type(row.name) == 'string' and row.name ~= '' and row.name ~= 'unknown' then
+        return row.name
+    end
+    return nil
+end
+
+-- Both tables spell a zone differently (the game drops apostrophes, the wiki splits Windurst Waters into halves), so
+-- the join is on C.zone_key. Guarded like every other call into CORE.
+local function zone_key_of(name)
+    if CORE == nil or type(CORE.zone_key) ~= 'function' then return '' end
+    local ok, key = pcall(CORE.zone_key, name)
+    if ok and type(key) == 'string' then return key end
+    return ''
+end
+
+-- The three kinds the request covers, as C.here() wants them: the per-kind switches this character has set. An
+-- empty set is not an error - it is a player who silenced every kind, and C.here answers nothing.
+local function alert_kinds()
+    local kinds = {}
+    if cfg.alert_shop == true then kinds.shop = true end
+    if cfg.alert_drop == true then kinds.drop = true end
+    if cfg.alert_bcnm == true then kinds.bcnm = true end
+    return kinds
+end
+
+-- How many spells the source table places in this zone at all, for /spells debug and for the 'nothing here' answer:
+-- the number that tells a player whether the zone was looked at or simply has no entry.
+local function zone_sourced(key)
+    local idx = zone_index()
+    if idx == nil or type(key) ~= 'string' or key == '' then return 0 end
+    local bucket = idx[key]
+    if type(bucket) ~= 'table' then return 0 end
+    return #bucket
+end
+
+-- The rows the alerts read: the window's own builder with `plain` set, which is the same list minus the view's
+-- filters and minus the learnt spells. The scan is reused (st.scan) because the zone handlers run between frames and
+-- a fresh 18-bag walk is not worth it; a nil scan simply means no 'held' markers, which no alert reads.
+local function plain_rows()
+    local scan = st.scan
+    if scan == nil then scan = scan_bags() end
+    rebuild(current_player(), game_bits(), scan, true)
+    return st.plain_rows or {}
+end
+
+-- What the player still needs that this zone has: [] for a zone with nothing, a zone the table does not name, and a
+-- CORE that is missing. Never raises, so no game event handler can be taken down by a bad row.
+local function zone_hits(key)
+    local idx = zone_index()
+    if idx == nil or CORE == nil or type(CORE.here) ~= 'function' then return {} end
+    local ok, hits = pcall(CORE.here, idx, key, plain_rows(), alert_kinds())
+    if ok and type(hits) == 'table' then return hits end
+    if not ok then fail('zones', hits) end
+    return {}
+end
+
+-- A toast is one line of text wide, so the names are capped there and the chat line carries the citations. Six is
+-- enough for the ordinary case (most zones source a handful of what one job needs) and keeps the toast on screen.
+local ZONE_TOAST_NAMES = 6
+-- Ten entries is a chat line the log can still show above the scroll: kind, spell and the generated note, which is
+-- the citation the whole feature exists for ('shop: Cure IV - Hasim / Lower Jeuno - (H-9) / 23,400 Gil').
+local ZONE_CHAT_ENTRIES = 10
+
+local function hit_names(hits)
+    local names = {}
+    for i = 1, #hits do
+        if i > ZONE_TOAST_NAMES then break end
+        local h = hits[i]
+        names[#names + 1] = tostring(h.row and h.row.name or '?')
+    end
+    local text = table.concat(names, ', ')
+    if #hits > ZONE_TOAST_NAMES then
+        text = text .. string.format(' and %d more', #hits - ZONE_TOAST_NAMES)
+    end
+    return text
+end
+
+local function hit_list(hits)
+    local parts = {}
+    for i = 1, #hits do
+        if i > ZONE_CHAT_ENTRIES then break end
+        local h = hits[i]
+        local note = tostring(h.note or '')
+        -- a source row can carry an empty note (the generator writes '' when the page named no place inside the
+        -- zone); the row's own badge note is the better second choice, and '' is better than 'nil'
+        if note == '' then note = tostring(h.row and h.row.note or '') end
+        parts[#parts + 1] = string.format('%s: %s - %s', tostring(h.kind), tostring(h.row and h.row.name or '?'), note)
+    end
+    local text = table.concat(parts, '; ')
+    if #hits > ZONE_CHAT_ENTRIES then
+        text = text .. string.format('; and %d more', #hits - ZONE_CHAT_ENTRIES)
+    end
+    return text
+end
+
+local function scroll_note(n)
+    return string.format('%d scroll%s', n, n == 1 and '' or 's')
+end
+
+-- One toast and one chat line, in the shapes the rest of the file already uses (open_link's toast, say's '[Spells]'
+-- prefix). Information only: no packet, no command, no chat input, no movement.
+local function zone_report(label, hits)
+    say(string.format('%s - %s to find - %s', label, scroll_note(#hits), hit_list(hits)))
+end
+
+local function announce_zone(label, hits)
+    U.toast('info', label, scroll_note(#hits) .. ' here: ' .. hit_names(hits), 8, 'scroll')
+    zone_report(label, hits)
+end
+
+-- One zone-in, once. Nothing here writes to the game: no packet, no command, no action.
+local function zone_in(e)
+    local id = type(e) == 'table' and e.zone or nil
+    if tonumber(id) ~= nil and tonumber(id) > 0 then st.last_zone_id = tonumber(id) end
+    local name = zone_name(id)
+    if name == nil then return false end
+    local key = zone_key_of(name)
+    if key == '' then return false end
+    -- the master switch. Read as == true so a hand-edited settings file with no key stays quiet instead of
+    -- announcing something the player never asked for
+    if cfg.zone_alerts ~= true then return false end
+    -- a Mog House in-and-out re-raises zone_change with the same zone: the player has not moved anywhere new
+    if st.last_zone_key == key then return false end
+    local hits = zone_hits(key)
+    if #hits == 0 then return false end
+    -- latched only once something was said. A zone with nothing to announce must not poison the memory, and a login
+    -- whose player table had not filled in yet (job 0 builds no rows) has to be able to speak on the next event.
+    st.last_zone_key = key
+    announce_zone(name, hits)
+    return true
+end
+
+-- The zone the player is standing in when a command runs. Three sources, in the docs' order
+-- (docs/addons/04-game-data.md:455-470): the server's own zone-in (vana.game.player_zone, right the second the zone
+-- loads), then the party list's own member (vana.game.party().members[1].zone, which lags a zone-in by the seconds
+-- the new zone takes to load), then the id the last zone_change/login carried. Every read is guarded; nil means the
+-- client has not named a zone yet and the command says so rather than guessing.
+local function current_zone()
+    local ok_p, z = pcall(function () return vana.game.player_zone(nil) end)
+    if ok_p and tonumber(z) and tonumber(z) > 0 then return tonumber(z) end
+    local ok_party, party = pcall(function () return vana.game.party() end)
+    if ok_party and type(party) == 'table' and type(party.members) == 'table' then
+        local row = party.members[1]
+        if type(row) == 'table' and tonumber(row.zone) and tonumber(row.zone) > 0 then return tonumber(row.zone) end
+    end
+    if st.last_zone_id ~= nil then return st.last_zone_id end
+    return nil
+end
+
+-- /spells here. Always answers: a listing, or the reason there is nothing to list (no zone named yet, or a zone the
+-- table sources nothing this job needs). It ignores last_zone_key on purpose - the player asked - and it is not
+-- gated by cfg.zone_alerts: the master switch is about the automatic notice, a typed command is not an interruption.
+local function list_zone()
+    local name = zone_name(current_zone())
+    if name == nil then
+        say('no zone to list yet: the client has not named one (it fills in with the first zone-in)')
+        return
+    end
+    local key = zone_key_of(name)
+    if key == '' then
+        say('no zone to list: spells_core.lua is missing')
+        return
+    end
+    local hits = zone_hits(key)
+    if #hits == 0 then
+        say(string.format('%s - nothing here this job still needs (%d spells sourced in this zone)',
+            name, zone_sourced(key)))
+        return
+    end
+    zone_report(name, hits)
+end
+
+-- the three alert switches, said in one line for /spells alerts with no argument and for /spells debug
+local function alert_status()
+    return string.format('zone alerts: %s (shop %s, drop %s, bcnm %s)',
+        cfg.zone_alerts == true and 'on' or 'off',
+        cfg.alert_shop == true and 'on' or 'off',
+        cfg.alert_drop == true and 'on' or 'off',
+        cfg.alert_bcnm == true and 'on' or 'off')
 end
 
 -------------------------------------------------------------------------------
@@ -1140,6 +1378,30 @@ do
     end
 end
 
+-- The zone alerts' two events, registered with the symbol written out for the same reason packet_in is: the policy
+-- scan (tools/addon_vet/scan.py) matches the literal vana.events.on('<name>') call, and an addon that reads the
+-- game's own state events should say so in its scan rather than hide behind the listen() helper. Both inside ONE
+-- pcall: a client with no vana.events.on loses the alerts and never the window, and each handler parses nothing, so
+-- a bad zone id costs an announcement rather than the frame the event arrived on.
+do
+    local ok = pcall(function ()
+        vana.events.on('zone_change', function (e)
+            local watched, err = pcall(zone_in, e)
+            if not watched then fail('zone', err) end
+        end)
+        -- login carries the zone too (docs/addons/02-events.md:66-76): the zone a session starts in is not a
+        -- zone_change, so without this the first zone of a session would never be announced
+        vana.events.on('login', function (e)
+            local watched, err = pcall(zone_in, e)
+            if not watched then fail('zone', err) end
+        end)
+    end)
+    if not ok then
+        -- no event surface: the window still draws, it just never says what is in a zone
+        fail('zone', 'this client has no vana.events.on')
+    end
+end
+
 listen('load', function ()
     -- the theme files first: a player's own themes\<id>.lua is not in THEME_BY_ID until load_theme_files runs, so
     -- checking the saved id before it would silently fall back to aurora for a theme that exists (AH does the same,
@@ -1163,7 +1425,7 @@ end)
 -- Commands
 -------------------------------------------------------------------------------
 
-local HELP = '/spells [toggle|show|hide|reset|mode ace|cw|wew|theme <id>|scale <50-300>|learned on|off|now on|off|held on|off|sync|rescan|sound on|off|debug]'
+local HELP = '/spells [toggle|show|hide|reset|mode ace|cw|wew|theme <id>|scale <50-300>|learned on|off|now on|off|held on|off|here|alerts on|off|alerts shop|drop|bcnm on|off|sync|rescan|sound on|off|debug]'
 
 listen('command', function (e)
     local words = {}
@@ -1230,6 +1492,27 @@ listen('command', function (e)
         else
             say('/spells held on|off')
         end
+    elseif what == 'here' then
+        -- the same listing the zone-in makes, on demand: the zone the player is in now, and no last-zone memory
+        list_zone()
+    elseif what == 'alerts' then
+        -- '/spells alerts on|off' is the master switch; '/spells alerts shop|drop|bcnm on|off' silences one kind.
+        -- Both save like every other setting, and both say what changed. A bare '/spells alerts' answers with the
+        -- three switches, which is the only way to see the per-kind ones without reading the settings file.
+        local state = (words[4] or ''):lower()
+        if arg == 'on' or arg == 'off' then
+            cfg.zone_alerts = arg == 'on'
+            save()
+            say('zone alerts: ' .. arg)
+        elseif (arg == 'shop' or arg == 'drop' or arg == 'bcnm') and (state == 'on' or state == 'off') then
+            if arg == 'shop' then cfg.alert_shop = state == 'on'
+            elseif arg == 'drop' then cfg.alert_drop = state == 'on'
+            else cfg.alert_bcnm = state == 'on' end
+            save()
+            say(string.format('%s zone alerts: %s', arg, state))
+        else
+            say(alert_status())
+        end
     elseif what == 'sync' then
         -- the owner's way past the 60 s gate: they just stored a scroll and want the marker now
         if LEDGER == nil then
@@ -1283,6 +1566,15 @@ listen('command', function (e)
             st.ledger_locked and 'yes' or 'no', asked))
         say('last error: ' .. tostring(st.last_error or 'none'))
         if CORE == nil then say('spells_core.lua is missing: no rows can be built') end
+        -- the zone line: which zone the client names, the key both tables meet on, how many spells the shipped table
+        -- sources there at all, and whether the alerts are armed. The count is the table's, not this job's, so a
+        -- player can tell 'nothing here for me' from 'this zone is not in the table'
+        local zid = current_zone()
+        local zname = zone_name(zid)
+        local zkey = zname ~= nil and zone_key_of(zname) or ''
+        say(string.format("zone '%s' (%s), %d sourced spells here, alerts %s",
+            tostring(zname or '?'), zkey ~= '' and zkey or 'none', zone_sourced(zkey),
+            cfg.zone_alerts == true and 'on' or 'off'))
     else
         say(HELP)
     end

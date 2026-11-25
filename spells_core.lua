@@ -416,4 +416,119 @@ function C.counts(rows)
     return c
 end
 
+-------------------------------------------------------------------------------
+-- Zones: which of a job's missing spells are sourced where the player is standing
+-------------------------------------------------------------------------------
+
+-- The two tables spell a zone differently and neither is wrong. The game's own zone table drops every apostrophe
+-- ('Port San dOria', 'RuLude Gardens', 'Ifrits Cauldron') because DAT names cannot carry one; spell_sources.lua keeps
+-- the wiki's spelling ('Port San d'Oria'); the wiki splits Windurst Waters into 'South' and 'North' halves the game
+-- has as one zone; and a past-version page says '(S)'/'[S]'. Every one of the 43 zones the generated table names is
+-- one of those four differences, so normalising both sides to a key is the whole join - no zone-id table and no
+-- hand-written alias list that would go stale the next time the generator adds a zone.
+--
+-- Order matters: the apostrophes go first ('Port San d'Oria' has to become one word, not two), then the past-version
+-- marker, then Windurst's compass suffix, then whitespace and case. A non-string (nil, a number) is the empty key,
+-- which every caller here reads as 'no zone'.
+local TYPO_APOSTROPHE = '\226\128\153' -- U+2019, written as bytes so this file stays ASCII
+
+function C.zone_key(name)
+    if type(name) ~= 'string' then return '' end
+    -- straight apostrophe, typographic apostrophe, backtick
+    local s = name:gsub("'", ''):gsub('`', ''):gsub(TYPO_APOSTROPHE, '')
+    -- '(S)' and '[S]', case-insensitive, with any spacing inside the brackets or around them, mean the PAST version of
+    -- a zone - a different zone from its present-day twin, not a spelling of it. It is kept as a token rather than
+    -- dropped: the shipped table has a vendor in The Eldieme Necropolis (S), and dropping the suffix would announce
+    -- him to a player standing in the present one. Both spellings of the past marker meet on the same token.
+    s = s:gsub('%s*[%(%[]%s*[Ss]%s*[%)%]]%s*$', ' (s)')
+    -- 'Windurst Waters South' is 'Windurst Waters' in the game
+    s = s:gsub('%s+[Nn][Oo][Rr][Tt][Hh]%s*$', ''):gsub('%s+[Ss][Oo][Uu][Tt][Hh]%s*$', '')
+    s = s:gsub('%s+', ' '):match('^%s*(.-)%s*$')
+    return s:lower()
+end
+
+-- Spell ids arrive as numbers from the game and as strings from a table keyed by id, and one table can hold both.
+-- Indexing by number is what makes the two sides of the join in here() meet.
+local function id_key(id)
+    local n = tonumber(id)
+    if n ~= nil then return n end
+    return tostring(id)
+end
+
+-- The order a zone's own list reads in, and the order the tags are worth: a vendor that always has the scroll first,
+-- then the monster that drops it, then the battlefield. Same order the plan fixed, and it is a fact about the table,
+-- not about the player, so it belongs here rather than in the window.
+local KIND_ORDER = { shop = 1, drop = 2, bcnm = 3 }
+
+-- Where each spell is sourced, grouped by zone. sources is spell_sources.lua's M.spells: keyed by spell id, one row
+-- per spell carrying tag/tags/note/zone/src. A row with no zone (160 of the 544 in the shipped table, all AH-only or
+-- vendor-less ones) is skipped - it has no place to be announced in, and inventing one is exactly what this table
+-- exists to avoid. The result is fresh tables throughout and the argument is only read.
+function C.zone_index(sources)
+    local out = {}
+    if type(sources) ~= 'table' then return out end
+    for id, row in pairs(sources) do
+        if type(row) == 'table' and type(row.zone) == 'string' and row.zone ~= '' then
+            local key = C.zone_key(row.zone)
+            if key ~= '' then
+                local bucket = out[key]
+                if bucket == nil then bucket = {} out[key] = bucket end
+                bucket[#bucket + 1] = { id = id_key(id), kind = row.tag, note = row.note, zone = row.zone }
+            end
+        end
+    end
+    for _, bucket in pairs(out) do
+        table.sort(bucket, function (a, b)
+            local ka, kb = KIND_ORDER[a.kind] or 9, KIND_ORDER[b.kind] or 9
+            if ka ~= kb then return ka < kb end
+            local na, nb = tostring(a.note or ''), tostring(b.note or '')
+            if na ~= nb then return na < nb end
+            return tostring(a.id) < tostring(b.id)
+        end)
+    end
+    return out
+end
+
+-- Only the three ways the request is about can be announced: the AH and quest paths have no zone on their row (the
+-- vendor IS the AH), so a kind outside this set is never a place to walk to.
+local HERE_KINDS = { shop = true, drop = true, bcnm = true }
+-- Rarest find first: a battlefield's scroll is the one you cannot buy, then a monster's drop, then the vendor.
+local HERE_ORDER = { bcnm = 1, drop = 2, shop = 3 }
+
+-- The rows a player still needs that this zone sources. rows is a list already built by C.rows, so learnt spells and
+-- every filter are the caller's business - this function only joins on spell id, and a zone whose spells are not in
+-- rows (already learnt, other jobs, filtered out) yields nothing. kinds is a set ('shop'/'drop'/'bcnm' -> true) so a
+-- player can silence one kind; nil means all three. Each hit carries the caller's own row table plus that row's kind,
+-- note and zone from the source table, so the window can print the citation without looking anything up again.
+-- Nothing is written to index, bucket or rows: the hits are new tables and only the hits are sorted.
+function C.here(index, key, rows, kinds)
+    local out = {}
+    if type(index) ~= 'table' or type(key) ~= 'string' or key == '' then return out end
+    local bucket = index[key]
+    if type(bucket) ~= 'table' then return out end
+    local want = type(kinds) == 'table' and kinds or nil
+    local by_id = {}
+    if type(rows) == 'table' then
+        for i = 1, #rows do
+            local row = rows[i]
+            if type(row) == 'table' and row.id ~= nil then by_id[id_key(row.id)] = row end
+        end
+    end
+    for i = 1, #bucket do
+        local entry = bucket[i]
+        if type(entry) == 'table' and HERE_KINDS[entry.kind] and (want == nil or want[entry.kind] == true) then
+            local row = by_id[id_key(entry.id)]
+            if row ~= nil then
+                out[#out + 1] = { row = row, kind = entry.kind, note = entry.note, zone = entry.zone }
+            end
+        end
+    end
+    table.sort(out, function (a, b)
+        local ka, kb = HERE_ORDER[a.kind] or 9, HERE_ORDER[b.kind] or 9
+        if ka ~= kb then return ka < kb end
+        return tostring(a.row.name or '') < tostring(b.row.name or '')
+    end)
+    return out
+end
+
 return C
