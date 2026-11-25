@@ -2,11 +2,16 @@
 
 What your job can still learn, and where each scroll comes from.
 
-`/spells` opens one glass card: your job and level, how many spells are still to learn, the mode's acquisition badges,
-a search box, skill pills, and a scrolling list of every spell your job (or subjob) can use at this level cap. Each row
-shows whether the spell is already learnt, its level, whether it comes from the main job or the subjob, its skill and
-MP cost, and one badge for where a scroll comes from. Click the badge to search the CatsEyeXI item database, click the
-Wiki button for BG-Wiki, or double-click the row for the database.
+`/spells` opens one glass card: your job and level, how many things are still to learn, the mode's acquisition
+badges, a search box, skill pills, and one scrolling list of everything this character can still learn - spells and,
+on a corsair, the dice. Each spell row shows whether it is already learnt, its level, whether it comes from the main
+job or the subjob, its skill and MP cost, and one badge for where a scroll comes from. A die row reads `Bard Die -
+Choral Roll`, with its COR level, its badge and its note. Click the badge to search the CatsEyeXI item database, click
+the Wiki button for BG-Wiki, or double-click the row for the database.
+
+The tracker's scope is one rule: **anything a player learns by using an item is in the list.** A bard song is learnt
+from a scroll; a corsair roll is learnt from a die; both are rows in the same list, under the same toggles. A third
+kind of item-taught thing would be a row in the addon's kind table, not a second screen.
 
 The window is drawn with the same `ui.lua` kit as the other VanaCore addons (Auction House, Party Finder, VanaMaps,
 Clawmark, VanaStore), so it follows the theme, the window scale, the opacity and the controller.
@@ -21,16 +26,13 @@ Clawmark, VanaStore), so it follows the theme, the window scale, the opacity and
 /spells mode ace|cw|wew     which acquisition systems the badges allow
 /spells theme <id>          one of the kit's themes; no id lists them
 /spells scale <50-300>      the window's size in percent
-/spells learned on|off      show the spells already learnt, too
-/spells now on|off          only the spells you could cast at your level right now
-/spells held on|off         only the spells whose scroll is already in one of your bags
-/spells dice                the Dice view: the 31 corsair dice, the roll each one teaches, and where it is sold
-/spells dice off            back to the spell list
-/spells dice known          in the Dice view, also list the rolls you already know
-/spells dice now            in the Dice view, only the dice your COR level can use
+/spells learned on|off      show the spells and dice already learnt, too
+/spells now on|off          only what this job and level can use right now
+/spells held on|off         only what already sits in one of your bags (a scroll or a die)
 /spells here                what this job still needs in the zone you are standing in, with where to get each one
-/spells alerts on|off       the zone-in notice on or off (one toast and one chat line, never twice for one zone)
+/spells alerts on|off       the zone-in chime and row highlight on or off (never twice for one zone)
 /spells alerts shop|drop|bcnm on|off   silence one of the three kinds of place
+/spells alerts sound on|off the soft zone-in chime by itself, with the highlight left on
 /spells rescan              read your bags again now (they are re-read every 4 seconds anyway)
 /spells sync                ask the server for the scroll ledger again (Gramateus / the box)
 /spells sound on|off        the bell as the window opens
@@ -88,12 +90,36 @@ non-CW character is told so once and the addon stops asking.
 `Usable now`, `In storage` and `Show learnt` are independent filters, so "castable, already bought, not learnt" is
 three clicks.
 
-## Corsair dice
+## Zone alerts: a chime and a highlight, no chat
+
+Walking into a zone where something on your list is sold, dropped or fought for plays the folder's softer bell
+(`sounds/tiny_bell.wav`) once and highlights those rows - an accent bar inside the row and a soft wash, in the current
+theme's own accent. Nothing is written to chat and no toast appears: an alert must not interrupt a fight. The
+highlight stays until the next zone-in, and a zone with nothing on your list clears it.
+
+`/spells alerts on|off` is the master switch; `/spells alerts shop|drop|bcnm on|off` silences one kind of place;
+`/spells alerts sound on|off` keeps the highlight and drops the chime. `/spells here` is the on-demand listing and
+still answers in chat, because you typed it.
+
+## Corsair dice, in the same list
 
 Corsair rolls are **not** learnt with level. Each roll is taught by a die item, bought or found - the client's own
 item table says so outright (`items_1.lua`, item 5477: `COR Lv.49`, *Teaches the Phantom Roll ability*, *Warrior's
-Roll*). The Dice view lists all **31** of them, by the level that lets you use them, with the vendor and the price:
-13 at Chayaya in Al Zahbi, 18 at Jajaroon and Chichiroon in Nashmau.
+Roll*). A die is therefore a row in the same list as a spell: `Bard Die - Choral Roll`, its COR level, its badge,
+vendor and price (13 dice at Chayaya in Al Zahbi, 18 at Jajaroon and Chichiroon in Nashmau), and a bag marker when
+the die itself is in one of your bags.
+
+Which dice are listed comes from your jobs, never from a setting:
+
+- **COR main** - every die at the level printed on it, usable from that level.
+- **COR sub** - the dice at half the sub level, rounded down, each row flagged `needs COR main`: you can use the die
+  at that level, but learning the roll needs corsair as the main job.
+- **COR neither** - no die rows at all.
+
+The same toggles apply to a die: `Show learnt` shows or hides a roll you already know (a missing ability bitfield is
+drawn as `?`, never as "you don't know it"), `Usable now` keeps the dice at your level, `In storage` keeps the ones
+whose item is in a bag, and the search box matches the die's name **and** the roll it teaches. The mode toggles
+filter a die exactly as they filter a shop scroll, through the same badge rule.
 
 Two things are read, and they are different reads:
 
@@ -136,8 +162,9 @@ player what is in their storage.
 
 What it does, exhaustively:
 
-* **reads** - job and level (`vana.game.self`), the spell bitfield (`vana.game.spells`), item ids in the eighteen
-  containers (`vana.game.container`), the shipped spell and item tables (`vana.gamedata`).
+* **reads** - job and level (`vana.game.self`), the spell bitfield (`vana.game.spells`), the ability bitfield
+  (`vana.game.abilities`, for corsair rolls), item ids in the eighteen containers (`vana.game.container`), the shipped
+  spell, die and item tables (`vana.gamedata`).
 * **sends exactly one kind of packet** - the ledger summary (`vana.packets.inject(false, 0x1A4, ...)`, action 13,
   source 2), when the window opens or on `/spells sync`, never more than once a minute. It is a query: no withdraw
   (action 2), no deposit, no trade, no item movement.
@@ -194,7 +221,7 @@ Copy the `spelltracker-vanacore` folder into `Vanacore\addons\vanacore\`, then:
 
 Settings are per character, in
 `settings\addons\spelltracker-vanacore\<Character>\settings.json` (theme, scale, mode, learned filter, skill filter,
-window position, opacity, opening sound).
+window position, opacity, opening sound, zone alerts and their chime).
 
 ## Files
 
@@ -206,7 +233,7 @@ window position, opacity, opening sound).
 | `spell_sources.lua` | the generated per-spell acquisition table |
 | `ui.lua` | the family's drawing kit (unmodified) |
 | `pad.lua` | controller support shared by the family (unmodified) |
-| `fonts/`, `sounds/small_bell.wav`, `images/jobs.png` | the kit's faces, the bell and the job icons |
+| `fonts/`, `sounds/small_bell.wav`, `sounds/tiny_bell.wav`, `images/jobs.png` | the kit's faces, the bells and the job icons |
 
 `spells_core.lua` and `spell_sources.lua` are required softly: a copy missing one still loads and opens an empty list
 (rather than failing at load), and `/spells debug` says which module is missing.

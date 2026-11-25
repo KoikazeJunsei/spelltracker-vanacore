@@ -4,7 +4,11 @@ spelltracker (SpellTracker): what this job can still learn, and where each scrol
 The list is built from the game's own data: the levels are vana.gamedata.spells (VanaCore's table, generated from
 CatsEyeXI's sql/spell_list.sql) and whether a spell is known is vana.game.spells(), the game's own 128-byte bitfield.
 Nothing here guesses a level, and no vendor note is invented: a spell whose scroll page could not be read shows a
-neutral '?' badge that says so.
+neutral '?' badge that says so. The same list carries the corsair dice, because a roll is learnt the same way a song
+is - by using an item - and their known-status is the ability bitfield (vana.game.abilities()).
+
+The tracker's scope is anything a player learns by USING AN ITEM: a scroll, a plate, a die. The learnable kinds are
+one table below (KINDS), so a third kind would be a row there and not a new branch in the draw.
 
 In game:
 
@@ -14,16 +18,13 @@ In game:
   /spells mode ace|cw|wew  which acquisition systems the badges allow (ACE, Crystal Warrior, Wings Era Warrior)
   /spells theme <id>       one of the UI kit's themes; no id lists them
   /spells scale <50-300>   the window's size
-  /spells learned on|off   show the spells already learnt, too
-  /spells now on|off       only the spells you could cast this minute
-  /spells held on|off      only the spells whose scroll is already in one of your bags
-  /spells dice             the Dice view: the 31 corsair dice, their roll and where each one is bought
-  /spells dice off         back to the spell list
-  /spells dice known       in the Dice view, also list the rolls you already know
-  /spells dice now         in the Dice view, only the dice you can use at your COR level
+  /spells learned on|off   show the spells and dice already learnt, too
+  /spells now on|off       only what this job and level can use this minute
+  /spells held on|off      only what already sits in one of your bags (a scroll or a die)
   /spells here             what this job still needs in the zone you are in, with where to get each one
-  /spells alerts on|off    the zone-in notice on or off (one toast and one chat line, never twice for one zone)
+  /spells alerts on|off    the zone-in chime and row highlight on or off (never twice for one zone)
   /spells alerts shop|drop|bcnm on|off   silence one of the three kinds of place
+  /spells alerts sound on|off   the soft chime itself, with the highlight left alone
   /spells sync             ask the server for the scroll ledger now (Crystal Warrior: Gramateus / the box)
   /spells rescan           read the bags again now instead of waiting for the cache
   /spells sound on|off     the bell as the window opens
@@ -36,7 +37,7 @@ theme, the scale and the controller.
 
 addon.name    = 'spelltracker-vanacore'
 addon.author  = 'koikaze'
-addon.version = '0.3.0'
+addon.version = '0.4.0'
 addon.desc    = 'SpellTracker: the spells this job can still learn, with where each one comes from.'
 
 local imgui = vana.imgui
@@ -83,8 +84,7 @@ end
 
 -- The corsair dice: dice_core.lua is the pure logic (which die teaches which roll, is it known, what is left) and
 -- dice_data.lua the generated acquisition table read off the die pages. Both required softly for the same reason as
--- the spell files: a checkout missing one still opens a window, and the Dice view says which one it is missing
--- rather than drawing an empty list as if there were no dice.
+-- the spell files: a checkout missing one still opens a window, just with no die rows in the one list.
 local DCORE, DDATA = nil, nil
 do
     local ok, mod = pcall(require, 'dice_core')
@@ -104,12 +104,10 @@ local DEFAULTS = {
     -- the two Phase-2 filters: 'usable now' and 'in storage'. Per character like the rest, because a mule and a
     -- main want different answers out of the same window.
     only_now = false, held_only = false,
-    -- the zone alerts (Phase 4). One master switch and one per kind of place, so a player who never wants to hear
-    -- about a battlefield can keep the vendor notices. Per character with everything else.
-    zone_alerts = true, alert_shop = true, alert_drop = true, alert_bcnm = true,
-    -- the window's two lists and the Dice view's two filters (Phase 5). 'view' is per character for the same reason
-    -- the mode is: a corsair alt wants the dice list and a white mage main wants the scrolls.
-    view = 'spells', dice_known = false, dice_now = false,
+    -- the zone alerts. One master switch and one per kind of place, so a player who never wants to hear about a
+    -- battlefield can keep the vendor notices. zone_sound is the soft chime by itself, for a player who wants the
+    -- highlight and not the noise. Per character with everything else.
+    zone_alerts = true, alert_shop = true, alert_drop = true, alert_bcnm = true, zone_sound = true,
     x = nil, y = nil, opacity = 100, open_sound = true,
 }
 
@@ -141,14 +139,14 @@ local st = {
     pos_placed = false,
     -- the zone alerts: the zone index built once from spell_sources, the last zone key that was announced (a Mog House
     -- in-and-out re-raises zone_change with the same zone), the last zone id any event carried (the fallback for
-    -- /spells here), and the plain row list the alerts read - a second list, so the window's own filters cannot
-    -- change what is announced
+    -- /spells here), the plain row list the alerts read - a second list, so the window's own filters cannot change
+    -- what is announced - and the ids of the rows the zone is about, which the row draw reads for its highlight. The
+    -- set is rebuilt on every zone-in and emptied by a zone with nothing this job needs.
     zone_idx = nil, last_zone_key = nil, last_zone_id = nil,
-    plain_rows = {}, plain_key = nil,
-    -- the Dice view: the list the window shows (filtered), the full list the header and the zone alerts read (every
-    -- die, known-status included), the zone index built from dice_data, and the cache key both lists are rebuilt on
-    dice_rows = {}, dice_all = {}, dice_idx = nil, dice_key = nil,
-    dice_counts = { total = 0, usable = 0, known = 0, missing = 0, unknown = 0, held = 0, kinds = {} },
+    plain_rows = {}, plain_key = nil, here_ids = {},
+    -- the zone index built from dice_data, and the dice counts for /spells debug: the one list merges both kinds, but
+    -- the debug line still answers 'how many dice are there' separately.
+    dice_idx = nil, dice_counts = { total = 0, usable = 0, known = 0, missing = 0, unknown = 0, held = 0, kinds = {} },
 }
 
 local function say(text) pcall(vana.chat.write, '[Spells] ' .. text, 106) end
@@ -171,11 +169,9 @@ local FALLBACK_SKILLS = {
 }
 local UNKNOWN_TAG = { label = 'No source', icon = 'question', color = '#8F97AD', note = 'no acquisition source is recorded for this spell' }
 
--- palette KEYS, not colours: P is filled by U.apply_theme and refilled by /spells theme, so a colour captured here
+-- Palette KEYS, not colours: P is filled by U.apply_theme and refilled by /spells theme, so a colour captured here
 -- at load time would leave the mode pills in the old theme's accent after a switch
 local MODE_COLOR = { ace = 'accent', cw = 'ok', wew = 'cyan' }
--- the Spells / Dice switch: two palette keys, so the list on screen and the pill that says so never disagree
-local VIEW_COLOR = { spells = 'accent', dice = 'gold' }
 local SKILL_COLOR = {
     all = 'accent2', white = '#F2F2F2', black = '#8E6BFF', song = '#F0C96A', ninjutsu = '#6E7BD9',
     summoning = '#5CD6C8', blue = '#5BB7FF', geomancy = '#B5D96E',
@@ -226,13 +222,25 @@ local function addon_dir()
     return ok and type(dir) == 'string' and dir or nil
 end
 
-local function play_bell()
+-- The folder's two sounds: small_bell.wav is the window's opening bell, tiny_bell.wav the softer one the zone-in
+-- chime uses. Both go through the same guarded path: no addon folder, no file, no sound, and no error either way.
+local BELL_OPEN = '\\sounds\\small_bell.wav'
+local BELL_ZONE = '\\sounds\\tiny_bell.wav'
+
+local function play_sound(file)
     local dir = addon_dir()
-    if dir == nil then return end
-    local path = dir .. '\\sounds\\small_bell.wav'
+    if dir == nil then return false end
+    local path = dir .. file
     local ok, here = pcall(vana.fs.exists, path)
-    if ok and here then pcall(vana.system.play_sound, path) end
+    if ok and here then
+        pcall(vana.system.play_sound, path)
+        return true
+    end
+    return false
 end
+
+local function play_bell() play_sound(BELL_OPEN) end
+local function play_chime() play_sound(BELL_ZONE) end
 
 -- the game's own name for a job, and the kit's table when the game data isn't there (a client without DATs)
 local function job_short(job)
@@ -282,6 +290,27 @@ local function ability_bits()
     return nil
 end
 
+local COR_JOB = 17
+
+-- How the player's own jobs reach the dice, or nil when they do not. Dice follow the same rule spells do, read off
+-- the same current_player() the spell list uses and never off a setting:
+--   COR main -> the die at its printed COR level, usable from that level
+--   COR sub  -> usable at half the sub level (floored), and flagged: learning a die needs COR main
+--   neither  -> no die rows at all
+-- A main job with level 0 (the character-select state) is not a COR the list can speak for, so it is nil too.
+local function cor_scope(me)
+    if type(me) ~= 'table' then return nil end
+    local job = tonumber(me.job) or 0
+    local level = tonumber(me.level) or 0
+    local sub_job = tonumber(me.sub_job) or 0
+    local sub_level = tonumber(me.sub_level) or 0
+    if job == COR_JOB and level > 0 then return { level = level, via = 'main' } end
+    if sub_job == COR_JOB and sub_level > 0 then
+        return { level = math.floor(sub_level / 2), via = 'sub' }
+    end
+    return nil
+end
+
 -- the spell table is large and can be absent on a client with no game data: read it once, and only when the list is
 -- about to be built. A nil answer is retried next frame rather than latched: vana.gamedata loads a table on first
 -- touch, and a one-shot latch would leave the window empty for the whole session if that first touch came too early.
@@ -313,6 +342,41 @@ local function spell_array(t)
     st.spell_array_of, st.spell_array = t, list
     return list
 end
+
+-- The learnable kinds. The tracker's scope is anything a player learns by USING AN ITEM, which is why a die (learnt
+-- by using the die) and a song's scroll (learnt by using the scroll) are both in here. A row is: the generated
+-- acquisition table, the client read that answers "do I know it" (the 128-byte spell bitfield, and the ability
+-- bitfield at 0x200 + the ability id for a roll), an optional job scope, and the builder that turns the game's own
+-- table into rows. The list builder below walks this table, so a third kind (a pet charm, an instrument) is a row
+-- here - its table and its bitfield - and not a new branch in the draw.
+local KINDS = {
+    {
+        id = 'spell',
+        -- spell_sources.lua's generated map, keyed by spell id
+        sources = function () return SOURCES end,
+        known = function () return game_bits() end,
+        rows = function (opts)
+            if CORE == nil or type(CORE.rows) ~= 'function' then return nil end
+            local spells = spell_table()
+            if spells == nil then return nil end
+            return CORE.rows(spell_array(spells), opts)
+        end,
+    },
+    {
+        id = 'die',
+        -- dice_data.lua's generated table, keyed by the die's item id
+        sources = function () return DDATA end,
+        -- dice_core.known does the 0x200 offset; nil bits stay UNKNOWN and keep the row visible
+        known = function () return ability_bits() end,
+        scope = cor_scope,
+        rows = function (opts)
+            if DCORE == nil or type(DCORE.rows) ~= 'function' or DDATA == nil then return nil end
+            if opts.scope == nil then return {} end
+            return DCORE.rows(DDATA.dice, opts)
+        end,
+    },
+}
+local KIND_ORDER = { 'spell', 'die' }
 
 -------------------------------------------------------------------------------
 -- What is in the bags
@@ -425,7 +489,7 @@ local function scan_bags()
                             local name = nil
                             if items ~= nil then name = item_name(items, s.id) end
                             if name ~= nil then
-                                -- the id rides along for the Dice view: a die is matched by its item id, not by its
+                                -- the id rides along for the die rows: a die is matched by its item id, not by its
                                 -- name (spells_core.held reads name/bag/count and ignores the extra field)
                                 scan.slots[#scan.slots + 1] = {
                                     name = name, id = s.id, bag = BAG_NAME[id] or ('bag ' .. tostring(id)),
@@ -594,164 +658,50 @@ end
 -- The rows
 -------------------------------------------------------------------------------
 
--- rebuilding is keyed on everything that can change a row: the character's jobs, the bitfield, the filters. Typing in
--- the search box thus costs one rebuild per keystroke, not one per frame. The scan generation is in the key because a
--- new bag scan changes row.held without changing anything else.
---
--- One builder, two lists. `plain` is the zone alerts' list: the same rows with the view's own filters OFF (nothing
--- learnt, no search, no skill pill, no 'usable now', no 'in storage'), because a search box is a way of looking at
--- the list and never a claim about what the player still needs - announcing 'Lower Jeuno: {the one spell matching
--- your query}' would be a lie about the zone. Each list keeps its own cache key, so one build never blanks the other.
-local function rebuild(me, bits, scan, plain)
-    local view = plain ~= true
-    local held = (scan and scan.held) or nil
-    local key = table.concat({
-        view and 'view' or 'plain',
-        me.job, me.level, me.sub_job, me.sub_level,
-        tostring(cfg.mode), tostring(view and cfg.show_learned == true),
-        tostring(view and cfg.skill or 'all'), (view and st.query[1]) or '', bits or '',
-        tostring(view and cfg.only_now == true), tostring(view and cfg.held_only == true),
-        tostring(st.scan_gen or 0),
-        -- the generation, not just the page count: a second answer with the same 19 pages is a different answer,
-        -- and a same-shaped one (a scroll stored today) would otherwise leave yesterday's markers on the rows
-        tostring(st.ledger_gen or 0),
-    }, '|')
-    if view then
-        if key == st.cache_key then return end
-        st.cache_key = key
-        st.rows = {}
-        st.counts = { total = 0, learned = 0, missing = 0, unreachable = 0, held = 0, stored = 0 }
-    else
-        if key == st.plain_key then return end
-        st.plain_key = key
-        st.plain_rows = {}
-    end
-
-    local spells = spell_table()
-    if spells ~= nil then spells = spell_array(spells) end
-    if CORE == nil or type(CORE.rows) ~= 'function' or spells == nil or me.job <= 0 then return end
-    local data = DATA or { modes = {}, tags = {}, skills = {}, skip_types = {}, level_cap = 75 }
-    -- spells_core reads sources by spell id, so it wants the generated map, not the module around it
-    local sources = (SOURCES and type(SOURCES.spells) == 'table') and SOURCES.spells or {}
-    local cap = tonumber(data.level_cap) or 75
-    -- the ledger's answer, folded into a name set. nil (no table, no answer yet) is passed as nil on purpose: an
-    -- empty set would be a claim that nothing is stored, and spells_core can tell the two apart
-    local stored = nil
-    if type(LEDGER) == 'table' and type(st.masks) == 'table' and type(CORE.ledger_stored) == 'function' then
-        local ok_l, set = pcall(CORE.ledger_stored, LEDGER, st.masks)
-        if ok_l and type(set) == 'table' then stored = set end
-    end
-
-    -- the counts are the whole job's list, not the filtered view: '12 to learn' should not fall when a search narrows
-    -- the view, and the header's 'N scrolls already in your bags' is counted against the same list for the same
-    -- reason (a filter must not look as if the scrolls left the bags)
-    if view then
-        local ok_all, all = pcall(CORE.rows, spells, {
-            job = me.job, level = me.level, sub_job = me.sub_job, sub_level = me.sub_level,
-            bits = bits, show_learned = true, mode = cfg.mode, data = data, sources = sources, cap = cap, held = held,
-            stored = stored,
-        })
-        if ok_all and type(all) == 'table' then
-            local ok_c, counts = pcall(CORE.counts, all)
-            if ok_c and type(counts) == 'table' then st.counts = counts end
-        elseif not ok_all then
-            fail('rows', all)
+-- The spell list's own order is the base and never changes: dice are inserted where their printed level belongs,
+-- after every spell of the same or a lower level, so a list with no dice is exactly the list spells_core built.
+local function merge_rows(spells, dice)
+    if dice == nil or #dice == 0 then return spells end
+    local out = {}
+    local j = 1
+    for i = 1, #dice do
+        local lv = tonumber(dice[i].level) or 0
+        while j <= #spells and (tonumber(spells[j].level) or 0) <= lv do
+            out[#out + 1] = spells[j]
+            j = j + 1
         end
+        out[#out + 1] = dice[i]
     end
+    while j <= #spells do
+        out[#out + 1] = spells[j]
+        j = j + 1
+    end
+    return out
+end
 
-    local skill = nil
-    if view and cfg.skill ~= nil and cfg.skill ~= 'all' then skill = cfg.skill end
-    local ok_rows, rows = pcall(CORE.rows, spells, {
-        job = me.job, level = me.level, sub_job = me.sub_job, sub_level = me.sub_level,
-        bits = bits, query = view and st.query[1] ~= '' and st.query[1] or nil, skill = skill,
-        mode = cfg.mode, show_learned = view and cfg.show_learned == true, data = data, sources = sources, cap = cap,
-        held = held, only_now = view and cfg.only_now == true, stored = stored,
-    })
-    if ok_rows and type(rows) == 'table' then
-        -- 'in storage' is the window's own filter, not spells_core's: it is one pass over the rows the core just
-        -- built and sorted, so the order the player sees is untouched
-        if view and cfg.held_only == true then
-            local with_scroll = {}
-            for i = 1, #rows do
-                if rows[i].held ~= nil then with_scroll[#with_scroll + 1] = rows[i] end
-            end
-            rows = with_scroll
+-- One count for the one list. A spell's learned flag and a die's known flag are the same fact under two names, and a
+-- die the client has not answered for is neither learned nor missing (its row is still listed, with a question mark).
+local function count_rows(rows)
+    local c = { total = 0, learned = 0, missing = 0, unreachable = 0, held = 0, stored = 0 }
+    for i = 1, #rows do
+        local r = rows[i]
+        c.total = c.total + 1
+        if r.kind == 'die' then
+            if r.known == true then c.learned = c.learned + 1
+            elseif r.known == false then c.missing = c.missing + 1 end
+        else
+            if r.learned then c.learned = c.learned + 1 else c.missing = c.missing + 1 end
+            if r.unreachable then c.unreachable = c.unreachable + 1 end
         end
-        if view then st.rows = rows else st.plain_rows = rows end
-    else
-        fail('rows', rows)
+        if r.held ~= nil then c.held = c.held + 1 end
+        if r.stored then c.stored = c.stored + 1 end
     end
-end
-
-local function scroll_name(row)
-    -- geomancy scrolls are plates; every other spell is a scroll
-    return ((row.type == 'geomancy') and 'Plate of ' or 'Scroll of ') .. tostring(row.name or '')
-end
-
-local function row_urls(row)
-    if CORE == nil or type(CORE.urls) ~= 'function' then return nil end
-    local ok, urls = pcall(CORE.urls, tostring(row.name or ''), scroll_name(row))
-    if ok and type(urls) == 'table' then return urls end
-    return nil
-end
-
--- open_url says whether it started the browser; where it did not, the link still reaches the player on the clipboard
-local function open_link(url)
-    if type(url) ~= 'string' or url == '' then
-        U.toast('warn', 'No link', 'this spell has no address to open', 4, 'circle-info')
-        return
-    end
-    local ok, opened = pcall(vana.system.open_url, url)
-    local shown = url:gsub('^https?://', '')
-    if ok and opened then
-        U.toast('info', 'Opened in your browser', shown, 3, 'arrow-right')
-    else
-        pcall(vana.system.set_clipboard, url)
-        U.toast('info', 'Link copied', shown, 4, 'circle-check')
-    end
-end
-
-local function open_database(row)
-    local urls = row_urls(row)
-    open_link(urls and urls.database or nil)
-end
-
-local function open_wiki(row)
-    local urls = row_urls(row)
-    open_link(urls and urls.wiki or nil)
-end
-
--------------------------------------------------------------------------------
--- The dice (a corsair roll is taught by a die item, not by levelling)
--------------------------------------------------------------------------------
-
--- The badge a die's source wears. The vocabulary is the scrolls' own (shop/ah/drop/quest/bcnm) plus 'none' for a page
--- that was read and named no place: the generator writes one row per page it could read, so a die with tag 'none' has
--- a real page behind it and a neutral badge in front of it, which is the honest pair.
-local DICE_TAG = {
-    shop  = { label = 'Shop',      icon = 'store',    colour = 'ok' },
-    ah    = { label = 'AH',        icon = 'coins',    colour = 'cyan' },
-    drop  = { label = 'Drop',      icon = 'box-open', colour = 'accent2' },
-    quest = { label = 'Quest',     icon = 'scroll',   colour = 'accent' },
-    bcnm  = { label = 'BCNM',      icon = 'dice',     colour = 'accent2' },
-    none  = { label = 'No source', icon = 'question', colour = 'dim' },
-}
-local COR_JOB = 17
-
--- The COR level the dice list is about, and 0 whenever the player is not on corsair. A die is not learnt by
--- levelling: its item's description prints the level it asks for ('COR Lv.49'), the client's own ability table agrees
--- (30 of 31 dice; Samurai Die prints 37 where the ability says 34, and the item is what the player is told), and that
--- printed number is what `usable` compares against. A subbed COR gets 0: the rule reported here is the main job's, and
--- a half-level route would be a claim about the game that nothing in the tables supports.
-local function cor_level(me)
-    if type(me) ~= 'table' then return 0 end
-    if tonumber(me.job) ~= COR_JOB then return 0 end
-    return tonumber(me.level) or 0
+    return c
 end
 
 -- item id -> the bag and count, out of the scan's own slots. The bag scan records each slot's name, count, bag and
--- now its item id, which is the only key a die can be matched on: 'Warrior Die' is an item's name, never a scroll's,
--- and two dice can share a name's words ('Corsair Die' / 'Corsair's Roll') without sharing an id.
+-- item id, which is the only key a die can be matched on: 'Warrior Die' is an item's name, never a scroll's, and two
+-- dice can share a word ('Corsair Die' / 'Corsair's Roll') without sharing an id.
 local function dice_held(scan)
     local out = {}
     local slots = (scan and scan.slots) or {}
@@ -769,53 +719,193 @@ local function dice_held(scan)
     return out
 end
 
--- Two lists out of one build, the same shape the spells use: st.dice_all is every die with its known-status (the
--- header's counts and the zone alerts read this one, so a search box cannot change what gets announced), and
--- st.dice_rows is the Dice view's own list with its filters on. Both are rebuilt on one key, because a rebuild is 31
--- rows and two cache keys to keep in step would be a bug waiting to happen.
-local function rebuild_dice(me, bits, scan)
-    local level = cor_level(me)
+-- rebuilding is keyed on everything that can change a row: the character's jobs, both bitfields, the filters. Typing
+-- in the search box thus costs one rebuild per keystroke, not one per frame. The scan generation is in the key because
+-- a new bag scan changes row.held without changing anything else; the job scope is in it because COR main, COR sub
+-- and no COR at all are three different lists.
+--
+-- One builder, two lists. `plain` is the zone alerts' list: the same rows with the view's own filters OFF (nothing
+-- learnt, no search, no skill pill, no 'usable now', no 'in storage'), because a search box is a way of looking at
+-- the list and never a claim about what the player still needs - announcing 'Lower Jeuno: {the one spell matching
+-- your query}' would be a lie about the zone. Each list keeps its own cache key, so one build never blanks the other.
+local function rebuild(me, scan, plain)
+    local view = plain ~= true
+    local held = (scan and scan.held) or nil
+    local scope = cor_scope(me)
+    -- every kind reads its own bitfield, so the true answer to "do I know it" travels with the kind rather than
+    -- being threaded through each caller
+    local bits = {}
+    for i = 1, #KIND_ORDER do
+        local k = KINDS[i]
+        bits[k.id] = k.known()
+    end
     local key = table.concat({
-        tostring(level), tostring(bits or ''),
-        tostring(cfg.dice_known == true), tostring(cfg.dice_now == true), st.query[1] or '',
+        view and 'view' or 'plain',
+        me.job, me.level, me.sub_job, me.sub_level,
+        tostring(cfg.mode), tostring(view and cfg.show_learned == true),
+        tostring(view and cfg.skill or 'all'), (view and st.query[1]) or '',
+        bits.spell or '', bits.die or '',
+        tostring(scope and scope.level or 'no'),
+        tostring(view and cfg.only_now == true), tostring(view and cfg.held_only == true),
         tostring(st.scan_gen or 0),
+        -- the generation, not just the page count: a second answer with the same 19 pages is a different answer,
+        -- and a same-shaped one (a scroll stored today) would otherwise leave yesterday's markers on the rows
+        tostring(st.ledger_gen or 0),
     }, '|')
-    if key == st.dice_key then return end
-    st.dice_key = key
-    st.dice_rows, st.dice_all = {}, {}
-    st.dice_counts = { total = 0, usable = 0, known = 0, missing = 0, unknown = 0, held = 0, kinds = {} }
-    if DCORE == nil or type(DCORE.rows) ~= 'function' or DDATA == nil then return end
-    local held = dice_held(scan)
-    local ok_all, all = pcall(DCORE.rows, DDATA.dice, { level = level, bits = bits, held = held, show_known = true })
-    if not ok_all then fail('dice', all) return end
-    if type(all) ~= 'table' then return end
-    st.dice_all = all
-    local ok_c, counts = pcall(DCORE.counts, all)
-    if ok_c and type(counts) == 'table' then st.dice_counts = counts end
-    local ok_rows, rows = pcall(DCORE.rows, DDATA.dice, {
-        level = level, bits = bits, held = held,
-        show_known = cfg.dice_known == true, only_now = cfg.dice_now == true,
-        query = (st.query[1] ~= '' and st.query[1]) or nil,
-    })
-    if ok_rows and type(rows) == 'table' then st.dice_rows = rows else fail('dice', rows) end
+    if view then
+        if key == st.cache_key then return end
+        st.cache_key = key
+        st.rows = {}
+        st.counts = { total = 0, learned = 0, missing = 0, unreachable = 0, held = 0, stored = 0 }
+    else
+        if key == st.plain_key then return end
+        st.plain_key = key
+        st.plain_rows = {}
+    end
+
+    local data = DATA or { modes = {}, tags = {}, skills = {}, skip_types = {}, level_cap = 75 }
+    -- spells_core reads sources by spell id, so it wants the generated map, not the module around it
+    local sources = (SOURCES and type(SOURCES.spells) == 'table') and SOURCES.spells or {}
+    local cap = tonumber(data.level_cap) or 75
+    local mode = mode_by_id(cfg.mode)
+    -- the ledger's answer, folded into a name set. nil (no table, no answer yet) is passed as nil on purpose: an
+    -- empty set would be a claim that nothing is stored, and spells_core can tell the two apart
+    local stored = nil
+    if type(LEDGER) == 'table' and type(st.masks) == 'table' and CORE ~= nil and type(CORE.ledger_stored) == 'function' then
+        local ok_l, set = pcall(CORE.ledger_stored, LEDGER, st.masks)
+        if ok_l and type(set) == 'table' then stored = set end
+    end
+    local bags_of_dice = dice_held(scan)
+
+    -- One build, every kind, one merged list. `show_learned` is the same toggle for a spell and for a die, because
+    -- the question the window asks is the same: what is left to learn. The spell rows keep spells_core's own order
+    -- (castable first, then level, then name); only the dice are placed, and merge_rows leaves a spell-only list
+    -- exactly as it was.
+    local function build(show_learned, query, only_now, skill)
+        local spell_opts = {
+            job = me.job, level = me.level, sub_job = me.sub_job, sub_level = me.sub_level,
+            bits = bits.spell, show_learned = show_learned, query = query, skill = skill,
+            mode = cfg.mode, data = data, sources = sources, cap = cap, held = held,
+            only_now = only_now, stored = stored,
+        }
+        local die_opts = {
+            level = scope and scope.level or 0, scope = scope, bits = bits.die, held = bags_of_dice,
+            show_known = show_learned, only_now = only_now, query = query,
+        }
+        local spell_rows, dice_rows = {}, {}
+        for i = 1, #KIND_ORDER do
+            local k = KINDS[i]
+            local opts = (k.id == 'die') and die_opts or spell_opts
+            local ok_k, rows = pcall(k.rows, opts)
+            if not ok_k then
+                fail(k.id == 'die' and 'dice' or 'rows', rows)
+                rows = {}
+            end
+            if type(rows) ~= 'table' then rows = {} end
+            if k.id == 'die' then dice_rows = rows else spell_rows = rows end
+        end
+        for i = 1, #spell_rows do spell_rows[i].kind = 'spell' end
+        for i = 1, #dice_rows do
+            local r = dice_rows[i]
+            r.kind = 'die'
+            if scope ~= nil then r.via = scope.via end
+            -- The badge is spells_core's own: the die's source row is the same shape spell_sources hands over
+            -- (tag/tags/note/src), so the mode's hide list filters a die exactly as it filters a shop scroll, and no
+            -- second mode rule exists to drift from the first.
+            if CORE ~= nil and type(CORE.badge) == 'function' then
+                local ok_b, tag, note, src, entry = pcall(CORE.badge, r, data, DDATA and DDATA.dice or {}, mode)
+                if ok_b then r.tag, r.note, r.src, r.badge = tag, note, src, entry end
+            end
+        end
+        return merge_rows(spell_rows, dice_rows), dice_rows
+    end
+
+    -- the counts are the whole job's list, not the filtered view: '12 to learn' should not fall when a search narrows
+    -- the view, and the header's bag count is counted against the same list for the same reason (a filter must not
+    -- look as if the scrolls left the bags)
+    if view then
+        local all, dice_all = build(true, nil, false, nil)
+        st.counts = count_rows(all)
+        if DCORE ~= nil and type(DCORE.counts) == 'function' then
+            local ok_c, counts = pcall(DCORE.counts, dice_all)
+            if ok_c and type(counts) == 'table' then st.dice_counts = counts end
+        end
+    end
+
+    local skill = nil
+    if view and cfg.skill ~= nil and cfg.skill ~= 'all' then skill = cfg.skill end
+    local rows = build(view and cfg.show_learned == true, (view and st.query[1] ~= '') and st.query[1] or nil,
+        view and cfg.only_now == true or false, skill)
+    -- 'in storage' is the window's own filter, not a core one: it is one pass over the rows just built and sorted, so
+    -- the order the player sees is untouched. A die's held entry is the same shape as a scroll's, so the one rule
+    -- covers both kinds.
+    if view and cfg.held_only == true then
+        local with_item = {}
+        for i = 1, #rows do
+            if rows[i].held ~= nil then with_item[#with_item + 1] = rows[i] end
+        end
+        rows = with_item
+    end
+    if view then st.rows = rows else st.plain_rows = rows end
 end
 
--- The alerts' list, rebuilt on demand: a zone event can arrive before the first frame has run, and a zone-in that
--- named no dice because the list was empty would be a quiet lie.
-local function dice_all_rows()
-    local scan = st.scan
-    if scan == nil then scan = scan_bags() end
-    rebuild_dice(current_player(), ability_bits(), scan)
-    return st.dice_all or {}
+-- Both lists from one scan. Every caller that rebuilt the spells' rows also wants the dice's (a frame, /spells
+-- rescan, /spells debug): a list one edit behind the game is exactly the bug the cache key exists to prevent, and
+-- two calls in three places is one call forgotten in the fourth.
+local function refresh_rows(me, scan)
+    rebuild(me, scan)
 end
 
--- Both lists from one scan and one bitfield read. Every caller that rebuilt the spells' rows also wants the dice's
--- (a frame, /spells rescan, /spells debug): a list one edit behind the game is exactly the bug the cache key exists to
--- prevent, and two calls in three places is one call forgotten in the fourth. The dice want the ABILITY bitfield, not
--- the spell one, so it is read here rather than threaded through the callers.
-local function refresh_rows(me, bits, scan)
-    rebuild(me, bits, scan)
-    rebuild_dice(me, ability_bits(), scan)
+local function scroll_name(row)
+    -- geomancy scrolls are plates; every other spell is a scroll
+    return ((row.type == 'geomancy') and 'Plate of ' or 'Scroll of ') .. tostring(row.name or '')
+end
+
+local function row_urls(row)
+    if CORE == nil or type(CORE.urls) ~= 'function' then return nil end
+    local ok, urls = pcall(CORE.urls, tostring(row.name or ''), scroll_name(row))
+    if ok and type(urls) == 'table' then return urls end
+    return nil
+end
+
+-- A die's own BG-Wiki page is the citation its row was generated from, so its Wiki button opens that page; its badge
+-- searches the database by the die's item name, which is what the site knows it by.
+local function die_urls(row)
+    if CORE == nil or type(CORE.urls) ~= 'function' then return nil end
+    local name = tostring(row.name or '')
+    local ok, urls = pcall(CORE.urls, name, name)
+    if ok and type(urls) == 'table' then return urls end
+    return nil
+end
+
+-- open_url says whether it started the browser; where it did not, the link still reaches the player on the clipboard
+local function open_link(url)
+    if type(url) ~= 'string' or url == '' then
+        U.toast('warn', 'No link', 'this row has no address to open', 4, 'circle-info')
+        return
+    end
+    local ok, opened = pcall(vana.system.open_url, url)
+    local shown = url:gsub('^https?://', '')
+    if ok and opened then
+        U.toast('info', 'Opened in your browser', shown, 3, 'arrow-right')
+    else
+        pcall(vana.system.set_clipboard, url)
+        U.toast('info', 'Link copied', shown, 4, 'circle-check')
+    end
+end
+
+local function open_database(row)
+    local urls = row.kind == 'die' and die_urls(row) or row_urls(row)
+    open_link(urls and urls.database or nil)
+end
+
+local function open_wiki(row)
+    if row.kind == 'die' then
+        open_link(row.src)
+        return
+    end
+    local urls = row_urls(row)
+    open_link(urls and urls.wiki or nil)
 end
 
 -------------------------------------------------------------------------------
@@ -908,23 +998,27 @@ local function dice_zone_sourced(key)
     return #bucket
 end
 
+-- forward declaration: dice_hits reads the plain list, which is built by the same builder the window uses
+local plain_rows
+
 -- The dice a player still has to learn that this zone sources. Only rows whose known-status is false: a die the player
 -- already knows must never be announced, and a nil-known die (no bitfield yet) is left out too, because the client not
 -- answering is not permission to announce something the player may already own. The per-kind switches still apply -
 -- every die in the shipped table is a shop's, so alert_shop silences them the way it silences a scroll vendor.
 --
--- The hits are re-sorted by the die's COR level (then name) after the join: spells_core.here orders a zone's sources by
--- kind and then by name, which for a wall of dice puts Beast Roll before Ranger Roll; the Dice view and the dice filter
--- both read lowest level first, and a notice that names the dice in a different order than the list is a second sorting
--- rule to keep right.
+-- The rows come from the plain list (the same builder the window uses, filters off), so a search box cannot change
+-- what is announced. They are re-sorted by the die's COR level (then name) after the join: spells_core.here orders a
+-- zone's sources by kind and then by name, which for a wall of dice puts Beast Roll before Ranger Roll; the list reads
+-- lowest level first, and a notice that names the dice in a different order than the list is a second sorting rule to
+-- keep right.
 local function dice_hits(key)
     local idx = dice_zone_index()
     if idx == nil or CORE == nil or type(CORE.here) ~= 'function' then return {} end
     local unknown = {}
-    local all = dice_all_rows()
+    local all = plain_rows()
     for i = 1, #all do
         local r = all[i]
-        if type(r) == 'table' and r.known == false then unknown[#unknown + 1] = r end
+        if type(r) == 'table' and r.kind == 'die' and r.known == false then unknown[#unknown + 1] = r end
     end
     if #unknown == 0 then return {} end
     local ok, hits = pcall(CORE.here, idx, key, unknown, alert_kinds())
@@ -943,12 +1037,12 @@ local function dice_hits(key)
 end
 
 -- The rows the alerts read: the window's own builder with `plain` set, which is the same list minus the view's
--- filters and minus the learnt spells. The scan is reused (st.scan) because the zone handlers run between frames and
--- a fresh 18-bag walk is not worth it; a nil scan simply means no 'held' markers, which no alert reads.
-local function plain_rows()
+-- filters and minus what is already learnt. The scan is reused (st.scan) because the zone handlers run between frames
+-- and a fresh 18-bag walk is not worth it; a nil scan simply means no 'held' markers, which no alert reads.
+function plain_rows()
     local scan = st.scan
     if scan == nil then scan = scan_bags() end
-    rebuild(current_player(), game_bits(), scan, true)
+    rebuild(current_player(), scan, true)
     return st.plain_rows or {}
 end
 
@@ -963,35 +1057,9 @@ local function zone_hits(key)
     return {}
 end
 
--- A toast is one line of text wide, so the names are capped there and the chat line carries the citations. Six is
--- enough for the ordinary case (most zones source a handful of what one job needs) and keeps the toast on screen.
-local ZONE_TOAST_NAMES = 6
 -- Ten entries is a chat line the log can still show above the scroll: kind, spell and the generated note, which is
 -- the citation the whole feature exists for ('shop: Cure IV - Hasim / Lower Jeuno - (H-9) / 23,400 Gil').
 local ZONE_CHAT_ENTRIES = 10
-
-local function hit_names(hits)
-    local names = {}
-    for i = 1, #hits do
-        if i > ZONE_TOAST_NAMES then break end
-        local h = hits[i]
-        names[#names + 1] = tostring(h.row and h.row.name or '?')
-    end
-    local text = table.concat(names, ', ')
-    if #hits > ZONE_TOAST_NAMES then
-        text = text .. string.format(' and %d more', #hits - ZONE_TOAST_NAMES)
-    end
-    return text
-end
-
--- the toast's six-name cap has to count scrolls and dice together, so the two lists are read as one here: '6 scrolls
--- and a die' with the die dropped off the end and no '+1 more' would be a wrong count on the one line the player reads
-local function merged(hits, dice)
-    local all = {}
-    for i = 1, #(hits or {}) do all[#all + 1] = hits[i] end
-    for i = 1, #(dice or {}) do all[#all + 1] = dice[i] end
-    return all
-end
 
 local function hit_list(hits)
     local parts = {}
@@ -1059,10 +1127,22 @@ local function zone_report(label, hits, dice)
     say(string.format('%s - %s to find - %s', label, need_note(#hits, #(dice or {})), table.concat(parts, '; ')))
 end
 
-local function announce_zone(label, hits, dice)
-    local icon = (#hits == 0 and #(dice or {}) > 0) and 'dice' or 'scroll'
-    U.toast('info', label, need_note(#hits, #(dice or {})) .. ' here: ' .. hit_names(merged(hits, dice)), 8, icon)
-    zone_report(label, hits, dice)
+-- The zone-in is silent in chat now. What it does is mark the zone live for the row draw - the ids of what this job
+-- still needs here - and, unless the chime is off, play the folder's softer bell once. No toast and no chat line: an
+-- alert must not interrupt a fight, and the highlighted rows are the notice. Nothing here writes to the game: no
+-- packet, no command, no action.
+local function announce_zone(hits, dice)
+    local ids = {}
+    for i = 1, #(hits or {}) do
+        local id = hits[i].row and hits[i].row.id
+        if id ~= nil then ids[id] = true end
+    end
+    for i = 1, #(dice or {}) do
+        local id = dice[i].row and dice[i].row.id
+        if id ~= nil then ids[id] = true end
+    end
+    st.here_ids = ids
+    if cfg.zone_sound ~= false then play_chime() end
 end
 
 -- One zone-in, once. Nothing here writes to the game: no packet, no command, no action.
@@ -1074,17 +1154,24 @@ local function zone_in(e)
     local key = zone_key_of(name)
     if key == '' then return false end
     -- the master switch. Read as == true so a hand-edited settings file with no key stays quiet instead of
-    -- announcing something the player never asked for
-    if cfg.zone_alerts ~= true then return false end
+    -- announcing something the player never asked for. The highlight is part of the alert, so it goes too.
+    if cfg.zone_alerts ~= true then
+        st.here_ids = {}
+        return false
+    end
     -- a Mog House in-and-out re-raises zone_change with the same zone: the player has not moved anywhere new
     if st.last_zone_key == key then return false end
     local hits = zone_hits(key)
     local dice = dice_hits(key)
-    if #hits == 0 and #dice == 0 then return false end
-    -- latched only once something was said. A zone with nothing to announce must not poison the memory, and a login
-    -- whose player table had not filled in yet (job 0 builds no rows) has to be able to speak on the next event.
+    if #hits == 0 and #dice == 0 then
+        -- nothing here for this job: the last zone's highlight must not linger on the new list
+        st.here_ids = {}
+        return false
+    end
+    -- latched only once something was announced. A zone with nothing to announce must not poison the memory, and a
+    -- login whose player table had not filled in yet (job 0 builds no rows) has to be able to speak on the next event.
     st.last_zone_key = key
-    announce_zone(name, hits, dice)
+    announce_zone(hits, dice)
     return true
 end
 
@@ -1130,13 +1217,14 @@ local function list_zone()
     zone_report(name, hits, dice)
 end
 
--- the three alert switches, said in one line for /spells alerts with no argument and for /spells debug
+-- the alert switches, said in one line for /spells alerts with no argument and for /spells debug
 local function alert_status()
-    return string.format('zone alerts: %s (shop %s, drop %s, bcnm %s)',
+    return string.format('zone alerts: %s (shop %s, drop %s, bcnm %s, sound %s)',
         cfg.zone_alerts == true and 'on' or 'off',
         cfg.alert_shop == true and 'on' or 'off',
         cfg.alert_drop == true and 'on' or 'off',
-        cfg.alert_bcnm == true and 'on' or 'off')
+        cfg.alert_bcnm == true and 'on' or 'off',
+        cfg.zone_sound == true and 'on' or 'off')
 end
 
 -------------------------------------------------------------------------------
@@ -1200,33 +1288,8 @@ local function set_held_only(on)
     save()
 end
 
--- The window's two lists. The search is cleared on a switch because the box is shared: a query typed for 'cure'
--- would leave the Dice view showing nothing with no visible reason for it.
-local function set_view(id)
-    id = (id == 'dice') and 'dice' or 'spells'
-    if cfg.view == id then return end
-    cfg.view = id
-    st.query[1] = ''
-    st.cache_key, st.dice_key = nil, nil
-    save()
-end
-
--- the Dice view's two filters, saved like the spells' three
-local function set_dice_known(on)
-    cfg.dice_known = on == true
-    st.dice_key = nil
-    save()
-end
-
-local function set_dice_now(on)
-    cfg.dice_now = on == true
-    st.dice_key = nil
-    save()
-end
-
 -- the search box: the theme's own frame, with the room on the left for the magnifier. Escape clears the query rather
--- than closing the window, which is what a box with text in it should do. The hint says which list the box filters,
--- because the same string is read by two views.
+-- than closing the window, which is what a box with text in it should do.
 local function draw_search(dl, x, cy, w, hint)
     local h = S(28)
     imgui.SetCursorScreenPos({ x, cy - h / 2 })
@@ -1253,8 +1316,13 @@ end
 
 local function draw_row(dl, x0, y0, rw, row, i)
     local rowh = S(34)
+    local die = row.kind == 'die'
     local key = '##st_row_' .. tostring(row.id or i)
-    local learned = row.learned == true
+    -- not `die and row.known or nil`: false would collapse to nil and draw a question mark for a roll the player
+    -- definitely does not know
+    local known = nil
+    if die then known = row.known end
+    local learned = (not die) and row.learned == true
     local badge = row.badge
     if type(badge) ~= 'table' then
         badge = (DATA and DATA.tags and DATA.tags[row.tag]) or UNKNOWN_TAG
@@ -1313,37 +1381,82 @@ local function draw_row(dl, x0, y0, rw, row, i)
     local hitw = math.max(1, pillx - x0 - S(4))
     imgui.SetCursorScreenPos({ x0, y0 })
     local row_pressed, row_hovered, hv = U.hit(key, hitw, rowh, S(8))
-    dl:AddRectFilled({ x0, y0 }, { x0 + rw, y0 + rowh }, U.u32(U.mix(P.card, P.card_hi, 0.85 * hv)), S(8))
-    dl:AddRect({ x0, y0 }, { x0 + rw, y0 + rowh }, U.u32(P.line, 0.8), S(8), 15, 1)
+    -- A row the zone the player just walked into is about: a soft accent wash under the normal card plus a short
+    -- accent bar just inside the left edge. Both are drawn inside the cell, so nothing moves - not the row height,
+    -- the hitbox or the list's scroll maths - and the kit's own palette keys are used, so every theme carries it.
+    local live = type(st.here_ids) == 'table' and row.id ~= nil and st.here_ids[row.id] == true
+    local fill = live and U.mix(P.card, P.accent, 0.18) or P.card
+    dl:AddRectFilled({ x0, y0 }, { x0 + rw, y0 + rowh }, U.u32(U.mix(fill, P.card_hi, 0.85 * hv)), S(8))
+    dl:AddRect({ x0, y0 }, { x0 + rw, y0 + rowh },
+        U.u32(live and U.mix(P.line, P.accent, 0.55) or P.line, 0.8), S(8), 15, 1)
+    if live then
+        dl:AddRectFilled({ x0 + S(3), y0 + S(7) }, { x0 + S(6), y0 + rowh - S(7) }, U.u32(P.accent, 0.95), S(2))
+    end
 
     local cy = y0 + rowh / 2
     local dx = x0 + S(14)
-    if learned then
+    if die then
+        -- known is TRUE, FALSE or nil: nil is the client not having answered, and it is drawn as a question mark, never
+        -- as 'you do not know this roll'
+        if known == true then
+            dl:AddCircleFilled({ dx, cy }, S(4), U.u32(P.ok, 0.95), 20)
+        elseif known == false then
+            dl:AddCircle({ dx, cy }, S(4), U.u32(P.faint, 0.9), 20, 1)
+        else
+            U.icon(dl, dx, cy, 'question', P.faint, T.tiny)
+        end
+    elseif learned then
         dl:AddCircleFilled({ dx, cy }, S(4), U.u32(P.ok, 0.95), 20)
     else
         dl:AddCircle({ dx, cy }, S(4), U.u32(P.faint, 0.9), 20, 1)
     end
 
     local name = tostring(row.name or '?')
-    local name_col = learned and U.mix(P.text, P.ok, 0.35) or P.text
-    if row.unreachable then name_col = U.mix(P.text, P.danger, 0.45) end
-    local name_w = rw * 0.42
+    local name_col
+    if die then
+        name_col = row.usable == true and P.text or U.mix(P.text, P.faint, 0.55)
+        if known == true then name_col = U.mix(name_col, P.ok, 0.35) end
+    else
+        name_col = learned and U.mix(P.text, P.ok, 0.35) or P.text
+        if row.unreachable then name_col = U.mix(P.text, P.danger, 0.45) end
+    end
+    local name_w = die and rw * 0.28 or rw * 0.42
     U.text_mid(dl, x0 + S(26), cy, U.fit(name, F.text, T.small, name_w), name_col, F.text, T.small)
 
-    local lx = x0 + rw * 0.46
+    -- a die row reads left to right as 'what it is, what it teaches, what level it asks for'; a spell row keeps the
+    -- columns it always had (level, via sub, skill, MP)
+    local lx = x0 + (die and rw * 0.58 or rw * 0.46)
     local lv = tonumber(row.level) or 0
-    U.text_mid(dl, lx, cy, 'Lv ' .. lv, row.unreachable and P.danger or P.dim, F.semi, T.tiny)
-    if row.via == 'sub' then
-        U.text_mid(dl, lx + S(42), cy, 'via SUB', P.cyan, F.text, T.tiny)
-    end
+    local lv_col = P.dim
+    if die and row.usable ~= true then lv_col = P.faint
+    elseif not die and row.unreachable then lv_col = P.danger end
+    U.text_mid(dl, lx, cy, 'Lv ' .. lv, lv_col, F.semi, T.tiny)
 
-    if type(row.skill_name) == 'string' and row.skill_name ~= '' then
-        U.text_mid(dl, x0 + rw * 0.60, cy, U.fit(row.skill_name, F.text, T.tiny, S(96)), P.dim, F.text, T.tiny)
-    end
-
-    local mp = tonumber(row.mp) or 0
-    if mp > 0 then
-        U.text_mid(dl, x0 + rw * 0.74, cy, 'MP ' .. mp, P.accent2, F.text, T.tiny)
+    if die then
+        local roll = tostring(row.roll or '')
+        if roll ~= '' then
+            U.text_mid(dl, x0 + rw * 0.36, cy, U.fit(roll, F.text, T.tiny, rw * 0.20),
+                known == true and P.dim or P.accent2, F.text, T.tiny)
+        end
+        -- a subbed COR can see the dice at half the sub level, but learning one needs COR main: said on the row, in
+        -- the same column a spell uses for 'via SUB'
+        if row.via == 'sub' then
+            U.text_mid(dl, lx + S(42), cy, 'needs COR main', P.cyan, F.text, T.tiny)
+        end
+        if row.usable ~= true then
+            U.text_mid(dl, lx + S(42) + (row.via == 'sub' and S(92) or 0), cy, 'not yet', P.faint, F.text, T.tiny)
+        end
+    else
+        if row.via == 'sub' then
+            U.text_mid(dl, lx + S(42), cy, 'via SUB', P.cyan, F.text, T.tiny)
+        end
+        if type(row.skill_name) == 'string' and row.skill_name ~= '' then
+            U.text_mid(dl, x0 + rw * 0.60, cy, U.fit(row.skill_name, F.text, T.tiny, S(96)), P.dim, F.text, T.tiny)
+        end
+        local mp = tonumber(row.mp) or 0
+        if mp > 0 then
+            U.text_mid(dl, x0 + rw * 0.74, cy, 'MP ' .. mp, P.accent2, F.text, T.tiny)
+        end
     end
 
     -- the badge's own hit area, then its colour; a source that is unknown is drawn as unknown, never guessed
@@ -1367,8 +1480,8 @@ local function draw_row(dl, x0, y0, rw, row, i)
         end
     end
 
-    -- the scroll is already in a bag: the marker names the bag on hover, and says where the rest are when the player
-    -- has the same spell in more than one (a copy in the satchel is why 'in your Inventory' alone is not the answer)
+    -- the scroll or the die is already in a bag: the marker names the bag on hover, and says where the rest are when
+    -- the player has the same thing in more than one
     if type(held) == 'table' then
         local mx = strip_x + store_w
         local mw_box = math.max(1, wx - S(2) - mx)
@@ -1394,137 +1507,6 @@ local function draw_row(dl, x0, y0, rw, row, i)
         open_wiki(row)
     elseif pill_pressed or (row_hovered and imgui.IsMouseDoubleClicked(0)) then
         open_database(row)
-    end
-end
-
--- The database search for a die. spells_core.urls already percent-encodes the way catseyexi.com's own search route
--- wants, so it is reused rather than copied; the die's own name is what the site knows an item by.
-local function open_dice_database(row)
-    local url = nil
-    if CORE ~= nil and type(CORE.urls) == 'function' then
-        local ok, urls = pcall(CORE.urls, tostring(row.name or ''), tostring(row.name or ''))
-        if ok and type(urls) == 'table' then url = urls.database end
-    end
-    open_link(url)
-end
-
--- Why the Dice view has nothing to show, in the order the facts matter: a module that failed to load is not the same
--- answer as a filter that matched nothing, and neither is 'you know them all'.
-local function dice_empty_text()
-    if DCORE == nil then return 'dice_core.lua is missing: no dice can be listed' end
-    if DDATA == nil then return 'dice_data.lua is missing: no dice sources can be listed' end
-    if cfg.dice_now == true then return 'no die you can use at this level - try Usable now off' end
-    return 'no dice to show - try Show known'
-end
-
--- One die, in the same card a spell row uses. The row answers four questions a corsair actually asks: what level does
--- the die ask for (and can I use it yet), what does it teach, do I already know that roll, and do I already own the
--- die. The first two markers come from different places on purpose - the bag scan reads an item in a container, the
--- bitfield says the roll is learnt, and a player can have either without the other (a die in the sack they never used,
--- a roll learnt from a die they sold).
-local function draw_dice_row(dl, x0, y0, rw, row, i)
-    local rowh = S(34)
-    local key = '##st_die_' .. tostring(row.id or i)
-    local tag = DICE_TAG[row.tag] or DICE_TAG.none
-    local label = tostring(tag.label)
-    local color = P[tag.colour] or P.dim
-    local note = tostring(row.note or '')
-    if note == '' then note = 'no vendor, drop or quest is recorded on this die page' end
-    local src = tostring(row.src or '')
-    local tip = note .. (src ~= '' and ('  (' .. src .. ')') or '')
-    if #tip > 320 then tip = tip:sub(1, 317) .. '...' end
-
-    local tw, th = U.measure(label, F.semi, T.tiny)
-    local pad = S(8)
-    local pillw = tw + th + S(4) + pad * 2
-    local pillh = th + S(7)
-    local wsize = S(22)
-    local wx = x0 + rw - wsize - S(4)
-    local wy = y0 + (rowh - wsize) / 2
-    -- only one marker sits between the pill and the Wiki button on a die row (the bag), so the strip's width is the
-    -- bag mark's own and the pill keeps the geometry a spell row gives it
-    local held = type(row.held) == 'table' and row.held or nil
-    local held_n = 0
-    local bag_w = 0
-    if held ~= nil then
-        held_n = tonumber(held.count) or 1
-        bag_w = S(18) + (held_n > 1 and S(12) or 0)
-    end
-    local pillx = wx - S(8) - pillw - bag_w
-    local pilly = y0 + (rowh - pillh) / 2
-
-    local hitw = math.max(1, pillx - x0 - S(4))
-    imgui.SetCursorScreenPos({ x0, y0 })
-    local row_pressed, row_hovered, hv = U.hit(key, hitw, rowh, S(8))
-    dl:AddRectFilled({ x0, y0 }, { x0 + rw, y0 + rowh }, U.u32(U.mix(P.card, P.card_hi, 0.85 * hv)), S(8))
-    dl:AddRect({ x0, y0 }, { x0 + rw, y0 + rowh }, U.u32(P.line, 0.8), S(8), 15, 1)
-
-    local cy = y0 + rowh / 2
-    local dx = x0 + S(14)
-    local known = row.known
-    if known == true then
-        dl:AddCircleFilled({ dx, cy }, S(4), U.u32(P.ok, 0.95), 20)
-    elseif known == false then
-        dl:AddCircle({ dx, cy }, S(4), U.u32(P.faint, 0.9), 20, 1)
-    else
-        -- the bitfield has not answered (nil, not false): a question mark is drawn and the row does not claim to know
-        -- that the player lacks the roll
-        U.icon(dl, dx, cy, 'question', P.faint, T.tiny)
-    end
-
-    local usable = row.usable == true
-    local name = tostring(row.name or '?')
-    local name_col = usable and P.text or U.mix(P.text, P.faint, 0.55)
-    if known == true then name_col = U.mix(name_col, P.ok, 0.35) end
-    U.text_mid(dl, x0 + S(26), cy, U.fit(name, F.text, T.small, rw * 0.30), name_col, F.text, T.small)
-
-    local roll = tostring(row.roll or '')
-    if roll ~= '' then
-        U.text_mid(dl, x0 + rw * 0.37, cy, U.fit(roll, F.text, T.tiny, rw * 0.23),
-            known == true and P.dim or P.accent2, F.text, T.tiny)
-    end
-
-    local lv = tonumber(row.level) or 0
-    U.text_mid(dl, x0 + rw * 0.61, cy, 'Lv ' .. lv, usable and P.dim or P.faint, F.semi, T.tiny)
-    if not usable then
-        -- the die exists but this character cannot use it yet: flagged as well as dimmed, because a dimmed name is a
-        -- look and 'not yet' is a statement
-        U.text_mid(dl, x0 + rw * 0.61 + S(44), cy, 'not yet', P.faint, F.text, T.tiny)
-    end
-
-    local zone = tostring(row.zone or '')
-    if zone ~= '' then
-        U.text_mid(dl, x0 + rw * 0.72, cy, U.fit(zone, F.text, T.tiny, S(90)), P.dim, F.text, T.tiny)
-    end
-
-    local pill_pressed = nil
-    local pill_hovered = nil
-    imgui.SetCursorScreenPos({ pillx, pilly })
-    pill_pressed, pill_hovered = U.hit(key .. 'p', pillw, pillh, pillh / 2)
-    U.pill(dl, pillx, pilly, label, U.mix(P.card_hi, color, 0.30), color, F.semi, T.tiny, pad, tag.icon)
-    if pill_hovered and tip ~= '' then
-        U.with_font(F.text, T.small, imgui.SetTooltip, tip)
-    end
-
-    -- the die itself is in a bag: the marker names the bag on hover, like the scroll marker does
-    if held ~= nil then
-        local mx = pillx + pillw + S(2)
-        imgui.SetCursorScreenPos({ mx, y0 })
-        local _, mark_hovered = U.hit(key .. 'b', math.max(1, wx - S(2) - mx), rowh, S(4))
-        U.icon(dl, mx + S(8), cy, BAG_ICON, P.ok, T.tiny)
-        if held_n > 1 then U.text_mid(dl, mx + S(15), cy, tostring(held_n), P.ok, F.semi, T.tiny) end
-        if mark_hovered then
-            U.with_font(F.text, T.small, imgui.SetTooltip, 'in your ' .. tostring(held.bag or 'bags'))
-        end
-    end
-
-    -- the die's own BG-Wiki page is the citation the row was generated from, so the Wiki button opens that rather than
-    -- a search: the page is the thing the badge can be checked against
-    local wiki_pressed = U.icon_button(dl, key .. 'w', wx, wy, wsize, 'scroll', P.cyan, 'Open BG-Wiki')
-    if wiki_pressed then
-        open_link(row.src)
-    elseif pill_pressed or (row_hovered and imgui.IsMouseDoubleClicked(0)) then
-        open_dice_database(row)
     end
 end
 
@@ -1592,45 +1574,23 @@ local function draw_window(me)
             local sub_level = (me.sub_job > 0) and me.sub_level or 0
             local title = string.format('%s %d  /  %s %d', job_short(me.job), me.level, sub_name, sub_level)
             U.text(dl, x + S(60), y + S(18), title, P.text, F.disp, T.h1)
-            local dice_view = cfg.view == 'dice'
             local counts = st.counts or {}
-            local dc = st.dice_counts or {}
-            local line
-            if dice_view then
-                -- the dice counts are the whole table's, not the filtered list's: '31 dice - 3 known' must not fall
-                -- to '5 dice' because a search is on. A nil bitfield is reported as such rather than as 'zero known'.
-                line = string.format('%d dice - %d known', tonumber(dc.total) or 0, tonumber(dc.known) or 0)
-                if (tonumber(dc.unknown) or 0) > 0 then
-                    line = string.format('%d dice - %d known, %d with no answer',
-                        tonumber(dc.total) or 0, tonumber(dc.known) or 0, tonumber(dc.unknown) or 0)
-                end
-            else
-                line = string.format('%d to learn - %d learnt', tonumber(counts.missing) or 0, tonumber(counts.learned) or 0)
-            end
+            local line = string.format('%d to learn - %d learnt',
+                tonumber(counts.missing) or 0, tonumber(counts.learned) or 0)
             U.text(dl, x + S(60), y + S(44), line, P.dim, F.text, T.small)
             -- where the next header line would start. Measured from the kit, never guessed: the header has a hard
             -- right edge (the close button) and the lines share one row at the 700..880 px width.
             local hx = x + S(60) + U.measure(line, F.text, T.small) + S(14)
-            if dice_view then
-                -- the dice in a bag: counted against every die, for the same reason the scroll count is
-                local bagged = tonumber(dc.held) or 0
-                if bagged > 0 then
-                    local bag_text = string.format('%d dice already in your bags', bagged)
-                    if hx + U.measure(bag_text, F.semi, T.small) <= x + w - S(42) - S(12) then
-                        U.text(dl, hx, y + S(44), bag_text, P.accent, F.semi, T.small)
-                    end
-                end
-            else
-            -- how many of this job's spells already have their scroll in a bag. Counted against the whole job list
+            -- how many rows already sit in a bag - a scroll or a die, one count. Counted against the whole list
             -- (st.counts), and only falls back to the smaller 'showing' number when a filter is on and the rows are
-            -- still visible: narrowing the search must not look as if the scrolls left the bags.
+            -- still visible: narrowing the search must not look as if the items left the bags.
             local held_total = tonumber(counts.held) or 0
             if held_total > 0 then
                 local held_shown = 0
                 local shown_rows = st.rows or {}
                 for i = 1, #shown_rows do if shown_rows[i].held ~= nil then held_shown = held_shown + 1 end end
                 local n = held_shown > 0 and held_shown or held_total
-                local bag_text = string.format('%d scrolls already in your bags', n)
+                local bag_text = string.format('%d already in your bags', n)
                 U.text(dl, hx, y + S(44), bag_text, P.accent, F.semi, T.small)
                 hx = hx + U.measure(bag_text, F.semi, T.small) + S(14)
             end
@@ -1645,25 +1605,20 @@ local function draw_window(me)
                     U.text(dl, hx, y + S(44), store_text, P.accent, F.semi, T.small)
                 end
             end
-            end
             if U.icon_button(dl, '##st_close', x + w - S(42), y + S(14), S(26), 'xmark', P.dim, 'Close') then
                 set_open(false)
             end
             dl:AddLine({ x + S(18), y + S(66) }, { x + w - S(18), y + S(66) }, U.u32(P.line, 0.9), 1)
 
-            -- controls: the mode, the three filters, the search - or, in the Dice view, its own two filters and its
-            -- own search. Both views keep the same two control rows and the same list rectangle, so switching one
-            -- list for the other moves nothing but the rows.
+            -- controls: the mode, the three filters and the search, on one row for the one list
             local cy = y + S(86)
             local ctl_x = x + S(18)
-            if not dice_view then
-                local mode_opts = {}
-                for _, md in ipairs(modes()) do mode_opts[#mode_opts + 1] = { md.id, md.label or md.id } end
-                local _, mw, clicked = U.segments(dl, '##st_mode', x + S(18), cy - S(13), S(26), mode_opts, cfg.mode,
-                    function (o) return pill_colour(MODE_COLOR, o[1], 'accent') end)
-                if clicked then set_mode(clicked) end
-                ctl_x = x + S(18) + mw + S(22)
-            end
+            local mode_opts = {}
+            for _, md in ipairs(modes()) do mode_opts[#mode_opts + 1] = { md.id, md.label or md.id } end
+            local _, mw, clicked = U.segments(dl, '##st_mode', x + S(18), cy - S(13), S(26), mode_opts, cfg.mode,
+                function (o) return pill_colour(MODE_COLOR, o[1], 'accent') end)
+            if clicked then set_mode(clicked) end
+            ctl_x = x + S(18) + mw + S(22)
 
             -- independent AND filters, each saved on click like the learnt toggle. The switches are laid out
             -- left to right and the search box takes the room that is left, so a label a font wider cannot overlap it.
@@ -1673,45 +1628,29 @@ local function draw_window(me)
                 ctl_x = ctl_x + S(40) + S(10) + select(1, U.measure(label, F.text, T.small)) + S(16)
                 return shown, pressed
             end
-            if dice_view then
-                local k_on, k_pressed = toggle_at('##st_dknown', 'Show known', cfg.dice_known == true)
-                if k_pressed then set_dice_known(k_on) end
-                local n_on, n_pressed = toggle_at('##st_dnow', 'Usable now', cfg.dice_now == true)
-                if n_pressed then set_dice_now(n_on) end
-            else
-                local learnt_on, learnt_pressed = toggle_at('##st_learned', 'Show learnt', cfg.show_learned == true)
-                if learnt_pressed then set_learned(learnt_on) end
-                local now_on, now_pressed = toggle_at('##st_now', 'Usable now', cfg.only_now == true)
-                if now_pressed then set_only_now(now_on) end
-                local held_on, held_pressed = toggle_at('##st_held', 'In storage', cfg.held_only == true)
-                if held_pressed then set_held_only(held_on) end
-            end
+            local learnt_on, learnt_pressed = toggle_at('##st_learned', 'Show learnt', cfg.show_learned == true)
+            if learnt_pressed then set_learned(learnt_on) end
+            local now_on, now_pressed = toggle_at('##st_now', 'Usable now', cfg.only_now == true)
+            if now_pressed then set_only_now(now_on) end
+            local held_on, held_pressed = toggle_at('##st_held', 'In storage', cfg.held_only == true)
+            if held_pressed then set_held_only(held_on) end
 
             local search_x = x + w - S(18) - S(210)
             if search_x < ctl_x + S(10) then search_x = ctl_x + S(10) end
             local search_w = math.min(S(210), x + w - S(18) - search_x)
             local escaped, search_focused = draw_search(dl, search_x, cy, math.max(S(80), search_w),
-                dice_view and 'search dice' or 'search spells')
+                'search spells and dice')
 
-            -- the second row: the Spells / Dice switch on the left, and the skill pills after it in the spells view.
-            -- The switch sits here rather than on the controls row because that row is already within 30 px of the
-            -- card's whole width with the mode pills, the three filters and the search on it (measured at the kit's
-            -- 13 px face); a control overlapping the search box would be worse than one on the line below.
+            -- the second row: the skill pills. They read a spell's type, so dice are not narrowed by them - a die is
+            -- not white or black, and hiding it behind a spell-school pill would be a second rule about dice.
             local py = y + S(116)
-            local view_opts = { { 'spells', 'Spells' }, { 'dice', 'Dice' } }
-            local _, vw, v_clicked = U.segments(dl, '##st_view', x + S(18), py, S(24), view_opts, cfg.view,
-                function (o) return pill_colour(VIEW_COLOR, o[1], 'accent') end)
-            if v_clicked then set_view(v_clicked) end
-            if not dice_view then
-                -- the skill pills: All, then the seven the file names
-                local skill_opts = { { 'all', 'All' } }
-                for _, sk in ipairs(skills()) do
-                    if sk.id then skill_opts[#skill_opts + 1] = { sk.id, sk.label or sk.id } end
-                end
-                local _, _, sk_clicked = U.segments(dl, '##st_skill', x + S(18) + vw + S(20), py, S(24), skill_opts,
-                    cfg.skill or 'all', function (o) return pill_colour(SKILL_COLOR, o[1], 'accent2') end)
-                if sk_clicked then set_skill(sk_clicked) end
+            local skill_opts = { { 'all', 'All' } }
+            for _, sk in ipairs(skills()) do
+                if sk.id then skill_opts[#skill_opts + 1] = { sk.id, sk.label or sk.id } end
             end
+            local _, _, sk_clicked = U.segments(dl, '##st_skill', x + S(18), py, S(24), skill_opts,
+                cfg.skill or 'all', function (o) return pill_colour(SKILL_COLOR, o[1], 'accent2') end)
+            if sk_clicked then set_skill(sk_clicked) end
 
             -- the list: a child gives the wheel and clips every row to its card, so nothing draws over the header
             local rx = x + S(18)
@@ -1724,7 +1663,7 @@ local function draw_window(me)
                     -- the CHILD's draw list, not the window's: it clips to the list, so a row can never paint over
                     -- the header or past the card's bottom edge (auctionhouse-vanacore.lua:2242 does the same)
                     local cdl = imgui.GetWindowDrawList()
-                    local rows = dice_view and (st.dice_rows or {}) or (st.rows or {})
+                    local rows = st.rows or {}
                     local step_y = S(38)
                     -- the child's scrollbar takes the right edge: the rows stop before it, so a Wiki button is never
                     -- half under the grab
@@ -1732,17 +1671,16 @@ local function draw_window(me)
                     -- the content height, so the wheel has something to scroll even when rows are culled below
                     imgui.Dummy({ 1, math.max(1, #rows * step_y + S(4)) })
                     if #rows == 0 then
-                        local empty = dice_view and dice_empty_text() or 'nothing to learn - try Show learnt or All'
-                        U.text_center(cdl, rx, ry + S(24), row_w, empty, P.faint, F.text, T.small)
+                        U.text_center(cdl, rx, ry + S(24), row_w, 'nothing to learn - try Show learnt or All', P.faint, F.text, T.small)
                     else
                         local scroll = 0
                         local ok_sc, sy = pcall(imgui.GetScrollY)
                         if ok_sc and tonumber(sy) then scroll = sy end
                         local first = math.max(1, math.floor(scroll / step_y) + 1)
                         local last = math.min(#rows, first + math.ceil(rh / step_y) + 2)
-                        -- one row renderer per list: a die row shows a roll and a COR level, a spell row a skill and an
-                        -- MP cost, and neither is a special case of the other
-                        local render = dice_view and draw_dice_row or draw_row
+                        -- one row renderer for both kinds: a die row's roll and COR level are columns the same
+                        -- function draws, not a second renderer to keep in step
+                        local render = draw_row
                         for i = first, last do
                             local row = rows[i]
                             if type(row) == 'table' then
@@ -1802,7 +1740,7 @@ local function tick()
     end
     -- the bags are read before the rows: an empty bag, a nil container and a character at the select screen all have
     -- to end up with unheld rows, never with a frame that raised
-    refresh_rows(me, game_bits(), scan_bags())
+    refresh_rows(me, scan_bags())
     if st.open or st.anim > 0 then draw_window(me) end
     U.draw_toasts(t)
 end
@@ -1868,7 +1806,7 @@ listen('load', function ()
     if PAD ~= nil then pcall(PAD.setup, 'spelltracker', U) end
     pcall(vana.log, 'spelltracker-vanacore ' .. addon.version .. ' loaded'
         .. (CORE == nil and ' (spells_core.lua is missing: the list stays empty)' or '')
-        .. (DCORE == nil and ' (dice_core.lua is missing: the dice view stays empty)' or ''))
+        .. (DCORE == nil and ' (dice_core.lua is missing: no die rows in the list)' or ''))
 end)
 
 listen('unload', function ()
@@ -1881,7 +1819,7 @@ end)
 -- Commands
 -------------------------------------------------------------------------------
 
-local HELP = '/spells [toggle|show|hide|reset|mode ace|cw|wew|theme <id>|scale <50-300>|learned on|off|now on|off|held on|off|dice|dice off|dice known|dice now|here|alerts on|off|alerts shop|drop|bcnm on|off|sync|rescan|sound on|off|debug]'
+local HELP = '/spells [toggle|show|hide|reset|mode ace|cw|wew|theme <id>|scale <50-300>|learned on|off|now on|off|held on|off|here|alerts on|off|alerts shop|drop|bcnm on|off|alerts sound on|off|sync|rescan|sound on|off|debug]'
 
 listen('command', function (e)
     local words = {}
@@ -1930,59 +1868,41 @@ listen('command', function (e)
     elseif what == 'learned' then
         if arg == 'on' or arg == 'off' then
             set_learned(arg == 'on')
-            say('showing learnt spells: ' .. arg)
+            say('showing learnt spells and dice: ' .. arg)
         else
             say('/spells learned on|off')
         end
     elseif what == 'now' then
         if arg == 'on' or arg == 'off' then
             set_only_now(arg == 'on')
-            say('only spells you can cast now: ' .. arg)
+            say('only what you can use now: ' .. arg)
         else
             say('/spells now on|off')
         end
     elseif what == 'held' then
         if arg == 'on' or arg == 'off' then
             set_held_only(arg == 'on')
-            say('only spells with a scroll in your bags: ' .. arg)
+            say('only what is in your bags: ' .. arg)
         else
             say('/spells held on|off')
-        end
-    elseif what == 'dice' then
-        -- '/spells dice' switches the window to the Dice view and opens it; 'dice off' goes back to the spells; 'dice
-        -- now' and 'dice known' flip the two filters, each saved like every other setting. The Spells/Dice pill does
-        -- the same thing with the mouse; the commands exist because everything else in this addon has one, and a
-        -- window a keyboard player cannot leave is not a feature.
-        if arg == 'now' then
-            set_dice_now(cfg.dice_now ~= true)
-            say('only dice you can use now: ' .. (cfg.dice_now and 'on' or 'off'))
-        elseif arg == 'known' then
-            set_dice_known(cfg.dice_known ~= true)
-            say('showing dice you already know: ' .. (cfg.dice_known and 'on' or 'off'))
-        elseif arg == 'off' then
-            set_view('spells')
-            say('spells view')
-        else
-            set_view('dice')
-            set_open(true)
-            st.dice_key = nil
-            rebuild_dice(current_player(), ability_bits(), scan_bags())
-            local c = st.dice_counts or {}
-            say(string.format('dice view: %d dice, %d known, %d left to learn',
-                tonumber(c.total) or 0, tonumber(c.known) or 0, tonumber(c.missing) or 0))
         end
     elseif what == 'here' then
         -- the same listing the zone-in makes, on demand: the zone the player is in now, and no last-zone memory
         list_zone()
     elseif what == 'alerts' then
-        -- '/spells alerts on|off' is the master switch; '/spells alerts shop|drop|bcnm on|off' silences one kind.
-        -- Both save like every other setting, and both say what changed. A bare '/spells alerts' answers with the
-        -- three switches, which is the only way to see the per-kind ones without reading the settings file.
+        -- '/spells alerts on|off' is the master switch; '/spells alerts shop|drop|bcnm on|off' silences one kind;
+        -- '/spells alerts sound on|off' keeps the highlight and drops the chime. All save like every other setting,
+        -- and all say what changed. A bare '/spells alerts' answers with every switch, which is the only way to see
+        -- the per-kind ones without reading the settings file.
         local state = (words[4] or ''):lower()
         if arg == 'on' or arg == 'off' then
             cfg.zone_alerts = arg == 'on'
             save()
             say('zone alerts: ' .. arg)
+        elseif arg == 'sound' and (state == 'on' or state == 'off') then
+            cfg.zone_sound = state == 'on'
+            save()
+            say('zone alert chime: ' .. state)
         elseif (arg == 'shop' or arg == 'drop' or arg == 'bcnm') and (state == 'on' or state == 'off') then
             if arg == 'shop' then cfg.alert_shop = state == 'on'
             elseif arg == 'drop' then cfg.alert_drop = state == 'on'
@@ -2008,7 +1928,7 @@ listen('command', function (e)
         st.scan_at = nil
         local scan = scan_bags()
         st.cache_key = nil
-        if st.open then refresh_rows(current_player(), game_bits(), scan) end
+        if st.open then refresh_rows(current_player(), scan) end
         say(string.format('bags read: %s - %d scrolls held', bag_list(scan), held_count(scan and scan.held)))
     elseif what == 'sound' then
         if arg == 'on' or arg == 'off' then
@@ -2023,10 +1943,9 @@ listen('command', function (e)
         -- measured now, not whenever the window last drew: the command works with the window shut, and it forces a
         -- fresh scan so the two bag lines are this moment's answer rather than the cache's
         st.cache_key = nil
-        st.dice_key = nil
         st.scan_at = nil
         local scan = scan_bags()
-        refresh_rows(current_player(), game_bits(), scan)
+        refresh_rows(current_player(), scan)
         local c = st.counts or {}
         say(string.format('%d shown, %d in the job, %d learnt, %d to learn, %d out of reach at %d',
             #(st.rows or {}), tonumber(c.total) or 0, tonumber(c.learned) or 0, tonumber(c.missing) or 0,
