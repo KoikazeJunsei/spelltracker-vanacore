@@ -193,12 +193,12 @@ Three honesty notes, since the whole point is that nothing here is invented:
 
 ## Install
 
-**As a package (recommended).** `spelltracker-vanacore-<version>.vcaddon` from the [releases page](https://github.com/KoikazeJunsei/cexi-addons/releases)
+**As a package (recommended).** `spelltracker-vanacore-<version>.vcaddon` from the [releases page](https://github.com/KoikazeJunsei/spelltracker-vanacore/releases)
 installs itself: double-click it, drop it in `Vanacore\addons\install\`, or use `/vana` > Addons > **Install from file**.
 VanaCore shows what is in it and where it came from before writing anything, installs it to
 `addons\vanacore\spelltracker-vanacore\`, moves any previous copy to `backups\addons\`, and offers to load it at every
 start. A web page can hand it over in one click:
-`vanacore://install/https://github.com/KoikazeJunsei/cexi-addons/releases/download/v0.1.0/spelltracker-vanacore-0.1.0.vcaddon`
+`vanacore://install/https://github.com/KoikazeJunsei/spelltracker-vanacore/releases/download/v0.1.0/spelltracker-vanacore-0.1.0.vcaddon`
 
 **By hand.** Copy this folder to `Vanacore\addons\vanacore\` and `/addon load spelltracker-vanacore`. Note that a
 hand-copied folder is never updated by a package later (the package installer refuses a folder that carries no
