@@ -24,10 +24,12 @@ Clawmark, VanaStore), so it follows the theme, the window scale, the opacity and
 /spells hide                close it
 /spells minimize            fold the window down to a pill (see below)
 /spells minimize off        unfold it again
-/spells reset               position, scale and opacity back to their defaults
+/spells reset               position, size, the three scales and opacity back to their defaults
 /spells mode ace|cw|wew     which acquisition systems the badges allow
 /spells theme <id>          one of the kit's themes; no id lists them
-/spells scale <50-300>      the window's size in percent
+/spells scale <50-300>      the window's geometry: borders, row heights, every measurement in percent
+/spells text <50-300>       the letters only - the same number the footer slider sets
+/spells pill <50-300>       the minimized capsule only
 /spells learned on|off      show the spells and dice already learnt, too
 /spells now on|off          only what this job and level can use right now
 /spells held on|off         only what already sits in one of your bags (a scroll or a die)
@@ -38,17 +40,45 @@ Clawmark, VanaStore), so it follows the theme, the window scale, the opacity and
 /spells rescan              read your bags again now (they are re-read every 4 seconds anyway)
 /spells sync                ask the server for the scroll ledger again (Gramateus / the box)
 /spells sound on|off        the bell as the window opens
-/spells debug               the row counts, the bags it read, and the last error, in chat
+/spells debug               the row counts, the bags it read, the window's size, and the last error, in chat
 ```
 
 An unknown argument prints the same list in one chat line.
 
+### Reading it on a small screen
+
+Three scales, deliberately separate, because they answer three different complaints:
+
+| Knob | What it moves | What it leaves alone |
+|---|---|---|
+| `/spells scale <50-300>` | the geometry: row heights, paddings, borders, the kit's own `S()` | the window you dragged |
+| `/spells text <50-300>` | the font sizes, everywhere | every rect, row and border |
+| `/spells pill <50-300>` | the minimized capsule and its word | the window, the list and the letters |
+
+**Both scales have a slider**, on the footer strip at the bottom-right of the window: `Text` above, `Pill` below,
+each with the kit's own track and its value in a label beside it. Drag one and the setting follows - the letters grow
+in place for `Text` (no window resize needed), and `Pill` sets the size the window folds to, which the full window
+cannot show, so its label is the feedback while you drag, and its word and tooltip say which surface it is. Both are
+the same settings `/spells text` and `/spells pill` write, so a command and a slider can never disagree. Each value is
+saved once, when you let go of the mouse, and `/spells reset` puts both back to 100 %.
+
+Two rows rather than one on purpose: at the window's own 320 px floor a row of two tracks, two labels and two words
+would need about 540 px and the card has 266 to give, so shrinking the tracks to fit would have made them unusable.
+The strip has its own band at the bottom of the card (two rows, so no row of the list hides behind a control), and it
+stops short of the corner: that corner is the window's resize grip now.
+
+**The window resizes like an app.** Drag any edge or corner. Its size is remembered per character and comes
+back next session, the list and its scrollbar follow it, and a window floor of 320 x 260 stops a drag that
+would hide the header. `/spells reset` returns it to 880 x 560 (at 100 % geometry) and re-centres it. The
+pill keeps its fixed size: a drag grip on a 230 x 34 capsule is a trap.
+
 ### Minimize: the pill
 
 The `-` button in the header (left of the close button) folds the window down to a pill about 230 x 34 - the word
-**Spelltracker**, a Play/Stop button and a Mute button, on the same card the window is drawn on. The fold is saved per
-character, so a window you left as a pill comes back as a pill next session. `/spells minimize` and
-`/spells minimize off` do the same thing from the keyboard.
+**Spelltracker**, a Play/Stop button and a Mute button, on the same card the window is drawn on. The capsule has its
+own scale (`/spells pill <50-300>`), so a Deck can have a pill it can actually hit without making the window bigger.
+The fold is saved per character, so a window you left as a pill comes back as a pill next session. `/spells minimize`
+and `/spells minimize off` do the same thing from the keyboard.
 
 - **Click the pill to restore it.** The word is part of the hitbox, not a label beside it: anywhere on the pill that
   is not Play/Stop or Mute brings the window back, with the current zone's rows already highlighted. Clicking either
@@ -244,8 +274,8 @@ Copy the `spelltracker-vanacore` folder into `Vanacore\addons\vanacore\`, then:
 ```
 
 Settings are per character, in
-`settings\addons\spelltracker-vanacore\<Character>\settings.json` (theme, scale, mode, learned filter, skill filter,
-window position, opacity, opening sound, zone alerts and their chime).
+`settings\addons\spelltracker-vanacore\<Character>\settings.json` (theme, the three scales, mode, learned filter,
+skill filter, window position and size, opacity, opening sound, zone alerts and their chime).
 
 ## Files
 

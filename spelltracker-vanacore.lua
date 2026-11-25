@@ -16,10 +16,12 @@ In game:
   /spells show | hide      the same, said outright
   /spells minimize         fold the window to a pill (its Play/Stop, Mute, and click-to-restore)
   /spells minimize off     unfold it again
-  /spells reset            position, scale and opacity back to their defaults
+  /spells reset            position, size, the three scales and opacity back to their defaults
   /spells mode ace|cw|wew  which acquisition systems the badges allow (ACE, Crystal Warrior, Wings Era Warrior)
   /spells theme <id>       one of the UI kit's themes; no id lists them
-  /spells scale <50-300>   the window's size
+  /spells scale <50-300>   the window's geometry: borders, row heights, every S() measurement
+  /spells text <50-300>    the letters on their own, in the same window and the same rows
+  /spells pill <50-300>    the minimized capsule on its own
   /spells learned on|off   show the spells and dice already learnt, too
   /spells now on|off       only what this job and level can use this minute
   /spells held on|off      only what already sits in one of your bags (a scroll or a die)
@@ -33,13 +35,15 @@ In game:
   /spells debug            the row counts, the bags, the ledger and the zone it could read, and the last error, in chat
 
 Click a spell's badge to search the CatsEyeXI database, its Wiki button for BG-Wiki, or double-click the row for the
-database. The window is drawn with the family's ui.lua kit, so it looks like the other VanaCore addons and follows the
-theme, the scale and the controller.
+database. Drag any edge or corner of the window to resize it - the list and its rows follow the size the player gave
+it - and drag the card itself to move it. The two scale sliders live in the strip along the bottom, so the readability
+knobs are in the window they make readable. The window is drawn with the family's ui.lua kit, so it looks like the
+other VanaCore addons and follows the theme, the scale and the controller.
 --]]
 
 addon.name    = 'spelltracker-vanacore'
 addon.author  = 'koikaze'
-addon.version = '0.5.0'
+addon.version = '0.6.0'
 addon.desc    = 'SpellTracker: the spells this job can still learn, with where each one comes from.'
 
 local imgui = vana.imgui
@@ -49,8 +53,11 @@ if imgui == nil then
 end
 
 local U = require('ui')
-local P, F, T = U.P, U.fonts(), U.sizes()
+local P, F = U.P, U.fonts()
 local S = U.S
+-- ImGuiWindowFlags_NoResize: the kit lists its flags in order (ui.lua:155 - NoTitleBar 1, NoResize 2, NoScrollbar 8,
+-- NoScrollWithMouse 16, NoCollapse 32, NoBackground 128), and the window drops this one to become draggable.
+local NO_RESIZE = 2
 
 -- the controller is optional: a mouse-only window beats an addon that fails to load without pad.lua
 local PAD = nil
@@ -103,6 +110,11 @@ end
 
 local DEFAULTS = {
     theme = 'aurora', scale = 100, mode = 'ace', show_learned = false, skill = 'all',
+    -- The two scales READABILITY is set with, both independent of the geometry `scale`: text_scale multiplies the font
+    -- sizes only (the row rects, the list and the borders stay exactly where they are), and pill_scale moves the
+    -- minimized capsule only. Both clamped 50-300 and both per character like everything else, so a Deck and a desk
+    -- can read the same window two different ways.
+    text_scale = 100, pill_scale = 100,
     -- the two Phase-2 filters: 'usable now' and 'in storage'. Per character like the rest, because a mule and a
     -- main want different answers out of the same window.
     only_now = false, held_only = false,
@@ -111,6 +123,10 @@ local DEFAULTS = {
     -- highlight and not the noise. Per character with everything else.
     zone_alerts = true, alert_shop = true, alert_drop = true, alert_bcnm = true, zone_sound = true,
     x = nil, y = nil, opacity = 100, open_sound = true,
+    -- The size the player dragged the window to, or nil for the computed one. nil rather than 880 x 560 on purpose:
+    -- a window nobody has resized by hand keeps following /spells scale, and one that has been dragged keeps the size
+    -- it was given (its contents still scale inside it).
+    w = nil, h = nil,
     -- folded down to the pill. Per character like the rest, so a window folded away comes back as a pill next session
     -- rather than springing open at full size.
     minimized = false,
@@ -142,6 +158,14 @@ local st = {
     masks = nil, ledger_gen = 0, ledger_locked = false, ledger_at = nil, ledger_asked = false,
     -- whether the window's position has been placed this session: once it has, ImGui owns it and a drag sticks
     pos_placed = false,
+    -- The same rule for the SIZE, and one more state: false = nothing placed yet this session, true = placed and left
+    -- alone since, nil = folded since it was placed (the ImGui window is wearing the pill's 230 x 34, so coming back
+    -- owes it a size). st.size_of is the size that was last asked for, so a change of scale re-places and a drag does
+    -- not. st.win_w/win_h are what GetWindowSize answered, for /spells debug.
+    size_placed = false, size_of = nil, win_w = nil, win_h = nil,
+    -- the footer sliders' values while they are being dragged, one per slider. Not settings: cfg.text_scale and
+    -- cfg.pill_scale are written once, on release, so a two-second drag does not save the settings file sixty times
+    text_drag = nil, pill_drag = nil,
     -- the zone alerts: the zone index built once from spell_sources, the last zone key that was announced (a Mog House
     -- in-and-out re-raises zone_change with the same zone), the last zone id any event carried (the fallback for
     -- /spells here), the plain row list the alerts read - a second list, so the window's own filters cannot change
@@ -215,9 +239,64 @@ local function theme_list()
 end
 
 -- a clamped percentage: a hand-edited settings file should not make the window unreadable
+local function clamp_pct(n)
+    return math.max(50, math.min(300, math.floor(tonumber(n) or 100)))
+end
+-- the geometry scale: the kit's S() multiplies every measurement by it, and this addon hands it to U.frame each frame
 local function scale_pct()
-    local n = tonumber(cfg.scale) or 100
-    return math.max(50, math.min(300, math.floor(n)))
+    return clamp_pct(cfg.scale)
+end
+-- the two readability scales, read the same way and clamped the same way. text_scale has a second source: the footer
+-- slider, which holds its own value while it is being dragged (st.text_drag) so the batch of frames between press and
+-- release follow it without the settings file being written on every one of them.
+local function text_pct()
+    return clamp_pct(st.text_drag or cfg.text_scale)
+end
+local function pill_pct()
+    return clamp_pct(st.pill_drag or cfg.pill_scale)
+end
+-- two sizes are the same size within a pixel: GetWindowSize answers a float, and a rounding difference is not a drag
+local function near_size(a, b)
+    return a ~= nil and b ~= nil and math.abs(tonumber(a) - tonumber(b)) < 1
+end
+
+-- The kit's font sizes, read through ONE shim: T.body is 15 at text_scale 100 and 30 at 200, and that holds for the
+-- kit's own defaults too (U.toggle reads T.small inside ui.lua, so a copy of the table would leave the toggle labels
+-- at 13 px while the rows beside them doubled). The metatable therefore goes on the table itself, with the numbers
+-- moved out from under it - a metatable's __index is only consulted for a key the table does NOT hold, so scaling in
+-- place would never fire. Nothing positional is affected: every measurement is S(n), which this does not touch.
+-- Guarded twice (no ui.sizes, a table that refuses a metatable): the window then draws at the kit's own sizes rather
+-- than failing to load.
+local T_RAW = { title = 30, h1 = 22, h2 = 17, body = 15, small = 13, tiny = 11 }
+local T = T_RAW
+do
+    local ok, sizes = pcall(U.sizes)
+    if ok and type(sizes) == 'table' then
+        -- a RELOAD lands here again, on a table that already has this metatable and therefore no numbers of its own:
+        -- taking the snapshot a second time through pairs() would find nothing and leave every size nil, which is a
+        -- frame that cannot measure a word. The numbers are carried ON the metatable, so a second session reuses them.
+        local raw = nil
+        local have = getmetatable(sizes)
+        if type(have) == 'table' and type(have.raw) == 'table' then raw = have.raw end
+        if raw == nil then
+            raw = {}
+            for k, v in pairs(sizes) do raw[k] = v end
+            for k in pairs(raw) do sizes[k] = nil end
+        end
+        local made = pcall(setmetatable, sizes, {
+            raw = raw,
+            __index = function (_, k)
+                local v = raw[k]
+                if type(v) == 'number' then return v * text_pct() / 100 end
+                return v
+            end,
+        })
+        if made then
+            T, T_RAW = sizes, raw
+        elseif have == nil then
+            for k, v in pairs(raw) do sizes[k] = v end -- put back what we took out: the kit still needs its numbers
+        end
+    end
 end
 local function opacity()
     local n = tonumber(cfg.opacity) or 100
@@ -1377,8 +1456,18 @@ local function draw_search(dl, x, cy, w, hint)
     return escaped, focused
 end
 
+-- A row is 34 px tall at 100 %, but the row's name is drawn at T.small, which the text scale multiplies: past about
+-- 250 % that line is taller than the card it sits in and consecutive rows overlap. So the card grows to fit its own
+-- line and the list's step follows the card. At 100 % this is exactly S(34) and nothing moves.
+local function row_h()
+    local h = S(34)
+    local fit = S(T.small) + S(14)
+    if fit > h then h = fit end
+    return h
+end
+
 local function draw_row(dl, x0, y0, rw, row, i)
-    local rowh = S(34)
+    local rowh = row_h()
     local die = row.kind == 'die'
     local key = '##st_row_' .. tostring(row.id or i)
     -- not `die and row.known or nil`: false would collapse to nil and draw a question mark for a roll the player
@@ -1573,9 +1662,20 @@ local function draw_row(dl, x0, y0, rw, row, i)
     end
 end
 
--- The pill: the window folded to its notification size, 230 x 34 at 100 % (scaled by S() like everything else). Wide
--- enough for the word at the display face plus a 22 px Play/Stop and a 22 px Mute, each inside its own round hitbox.
+-- The pill: the window folded to its notification size, 230 x 34 at 100 % (scaled by S() like everything else, and by
+-- pill_scale on top of that). Wide enough for the word at the display face plus a 22 px Play/Stop and a 22 px Mute,
+-- each inside its own round hitbox.
 local PILL_W, PILL_H, PILL_BTN = 230, 34, 22
+
+-- The pill's own factor: cfg.pill_scale (50-300) as a multiplier, applied to its three constants BEFORE S() - so the
+-- capsule is the one surface whose size the player sets on its own. It neither follows the text scale (its word is
+-- sized here, not by T) nor the window's geometry beyond the kit's own scale, which still applies on top.
+local function pill_k()
+    return pill_pct() / 100
+end
+local function pill_size(n)
+    return n * pill_k()
+end
 
 -- The pill: one window folded down, not a second window. Left to right the word 'Spelltracker' in the kit's display
 -- face, a drawn Play/Stop and a Mute wearing the kit's own bell glyphs. EVERYTHING else - the word included - is the
@@ -1614,15 +1714,21 @@ local function draw_pill(dl, x, y, w, h, t)
 
     local cy = y + h / 2
     -- one button geometry for both states and both buttons, measured from the right edge: neither target moves when
-    -- the glyph changes, and the word never pushes them around
-    local btn = math.min(S(PILL_BTN), h - S(6))
-    local mute_x = x + w - S(10) - btn
-    local play_x = mute_x - S(6) - btn
+    -- the glyph changes, and the word never pushes them around. The height is what the capsule can hold, so the button
+    -- is clamped to it - at pill_scale 300 the button wants 66 px of a 102 px capsule and still fits with its margin,
+    -- and a capsule clipped by a small screen keeps a button that fits what is left rather than one that overflows.
+    local btn = math.min(S(PILL_BTN * pill_k()), h - S(6))
+    local mute_x = x + w - S(10 * pill_k()) - btn
+    local play_x = mute_x - S(6 * pill_k()) - btn
 
     local face = F.disp or F.text
-    local text_x = x + S(14)
-    local text_w = math.max(S(24), play_x - text_x - S(8))
-    U.text_mid(dl, text_x, cy, U.fit('Spelltracker', face, T.h2, text_w), P.text, face, T.h2)
+    local text_x = x + S(14 * pill_k())
+    local text_w = math.max(S(24 * pill_k()), play_x - text_x - S(8 * pill_k()))
+    -- The word is the CAPSULE's text, so it is sized by the capsule and not by text_scale: the capsule's height grows
+    -- with pill_scale, and a word that grew with the window's text scale while the capsule ignored it would overflow
+    -- its own pill. The tooltips below stay on T, because they are ImGui's own surface, outside the pill.
+    local word = (T_RAW.h2 or 17) * pill_k()
+    U.text_mid(dl, text_x, cy, U.fit('Spelltracker', face, word, text_w), P.text, face, word)
 
     -- Play is a triangle with a vertical left edge and its apex to the right; Stop is a square. Both are geometry on
     -- the draw list rather than a glyph: the kit's icon table has no play or stop, and its faces come from the
@@ -1669,6 +1775,34 @@ local function draw_pill(dl, x, y, w, h, t)
     if restore and not play_pressed and not mute_pressed then set_minimized(false) end
 end
 
+-- The footer's two scales: the text scale and the pill scale, as the kit's own slider each. Both are laid out from the
+-- RIGHT edge inwards, so the pair line up on one axis and the bottom-right corner - which is the window's resize grip
+-- now that NoResize is off - stays free. ONE ROW PER SLIDER: at the window's 320 px floor, two tracks plus two value
+-- labels plus two words need about 540 px and the card has 266 px to give, so they would not fit side by side at any
+-- usable track width. Two rows of S(30), a clear S(6) between the two hitboxes, and the list gives up the whole band.
+local SCALE_MIN, SCALE_MAX = 50, 300
+local FOOTER_ROW, FOOTER_ROWS = 30, 2
+local function footer_slider(dl, key, word, x, w, cy, value, tip)
+    -- the value label the kit draws to the right of its track is part of this control's width, so the layout starts
+    -- from the widest label it can print ('300%') rather than from the track
+    local label_w = select(1, U.measure('300%', F.semi, T.small))
+    local label_x = x + w - S(18) - label_w -- the value label's left edge, inside the window's own padding
+    local track_right = label_x - S(14)     -- the kit draws the label at track x + width + S(14)
+    local word_w = select(1, U.measure(word, F.text, T.small))
+    local track_w = math.min(S(150), (track_right - (x + S(18))) - S(14) - word_w)
+    if track_w < S(40) then return nil end  -- a card too narrow for a track still has /spells text and /spells pill
+    local track_x = track_right - track_w
+    local word_x = track_x - S(14) - word_w
+    if word_x >= x + S(18) then
+        U.text_mid(dl, word_x, cy, word, P.dim, F.text, T.small)
+    end
+    local picked, moved, released = U.slider(dl, key, track_x, cy, track_w, value, SCALE_MIN, SCALE_MAX, '%d%%')
+    if tip ~= nil and imgui.IsItemHovered() then
+        U.with_font(F.text, T.small, imgui.SetTooltip, tip)
+    end
+    return picked, moved, released
+end
+
 local function draw_window(me, t)
     local sw, sh = 1920, 1080
     do
@@ -1676,19 +1810,29 @@ local function draw_window(me, t)
         if ok and tonumber(w) and tonumber(h) then sw, sh = w, h end
     end
     local sc = scale_pct() / 100
-    -- The pill is the same window at a notification size, so this is a size branch and not a second window: 230 x 34
-    -- at 100 %, scaled by S() like every other measurement, and never the full window's 880 x 560.
-    local w, h
+    -- read ONCE: the position block below clears it, and the size block needs the same answer
+    local recenter = st.recenter == true
+    -- The window's DEFAULT size at this scale, plus the floor and the ceiling a drag is allowed: 880 x 560 is where the
+    -- controls row fits three switches, the mode segments and the search box side by side (at 700 the third one lands
+    -- on the search field, measured at the kit's 13 px face); 320 x 260 is the floor the code has always computed; the
+    -- screen is the ceiling.
+    local min_w, min_h = math.max(S(320), 1), math.max(S(260), 1)
+    local max_w, max_h = math.max(min_w, sw - S(20)), math.max(min_h, sh - S(20))
+    local def_w = math.min(math.max(min_w, math.floor(S(880))), max_w)
+    local def_h = math.min(math.max(min_h, math.floor(S(560))), max_h)
+    -- What the window is going to have: the pill is the same window at a notification size (a size branch, not a
+    -- second window - 230 x 34 at 100 %, times pill_scale, and never the window's 880 x 560), and the window is the
+    -- player's own dragged size when there is one, the default when there is not.
+    local w, h = def_w, def_h
     if st.minimized == true then
-        w = math.min(S(PILL_W), sw - S(20))
-        h = math.min(S(PILL_H), sh - S(20))
+        w = math.min(S(pill_size(PILL_W)), sw - S(20))
+        h = math.min(S(pill_size(PILL_H)), sh - S(20))
     else
-        -- wider than the list needs, because the controls row has to hold three switches, the mode segments and the
-        -- search box side by side: at 700 the third one lands on top of the search field (measured at the kit's 13 px face)
-        w = math.max(S(320), math.floor(S(880)))
-        h = math.max(S(260), math.floor(S(560)))
-        w = math.min(w, sw - S(20))
-        h = math.min(h, sh - S(20))
+        local cw, ch = tonumber(cfg.w), tonumber(cfg.h)
+        if cw ~= nil and ch ~= nil then
+            w = math.max(min_w, math.min(max_w, cw))
+            h = math.max(min_h, math.min(max_h, ch))
+        end
     end
 
     -- The position is placed ONCE and then left alone. ImGuiCond_Always is applied on every frame, so pinning the
@@ -1707,19 +1851,72 @@ local function draw_window(me, t)
         imgui.SetNextWindowPos({ math.floor(px), math.floor(py) }, U.ALWAYS)
         st.recenter, st.pos_placed = nil, true
     end
-    imgui.SetNextWindowSize({ w, h }, U.ALWAYS)
+    -- The SIZE follows the place's rule: placed when it has to be, and then ImGui's. ALWAYS on every frame (which this
+    -- did until 0.6.0) imposes the computed size before the frame's own resize is read back, so an edge or a corner
+    -- snaps back every frame - the same class of defect the position had in 0.1.1. A placement is owed in exactly three
+    -- cases: the first frame this session (FIRST_USE_EVER - this is where the window STARTS, not where it stays),
+    -- /spells reset, and the frame the window comes back from the pill, which is wearing the capsule's 230 x 34. A
+    -- change of /spells scale moves the default, so that re-places too; a drag never does.
+    if st.minimized == true then
+        imgui.SetNextWindowSize({ w, h }, U.ALWAYS)
+        if st.size_placed then st.size_placed = nil end
+        st.size_of = nil
+    else
+        local moved = st.size_of == nil
+            or math.abs(st.size_of[1] - w) >= 1 or math.abs(st.size_of[2] - h) >= 1
+        local cond = nil
+        if recenter or st.size_placed == nil then
+            cond = U.ALWAYS -- a reset, or the window is still wearing the capsule's size
+        elseif not st.size_placed then
+            cond = U.FIRST_USE_EVER -- the first frame this session: where it STARTS, not where it stays
+        elseif moved then
+            cond = U.ALWAYS -- the default moved under it (a /spells scale change), which is not a drag
+        end
+        if cond ~= nil then
+            imgui.SetNextWindowSize({ w, h }, cond)
+            st.size_of = { w, h }
+        end
+        st.size_placed = true
+    end
+    -- the drag's floor and ceiling, every frame: ImGui keeps them for one Begin only. The pill is not resizeable at
+    -- all, so it gets none.
+    if st.minimized ~= true and imgui.SetNextWindowSizeConstraints ~= nil then
+        pcall(imgui.SetNextWindowSizeConstraints, { min_w, min_h }, { max_w, max_h })
+    end
     if st.focus_frames > 0 then
         imgui.SetNextWindowFocus()
         st.focus_frames = st.focus_frames - 1
     end
 
+    -- NoTitleBar 1, NoResize 2, NoScrollbar 8, NoScrollWithMouse 16, NoCollapse 32, NoBackground 128 - the kit's own
+    -- comment on U.WINDOW_FLAGS. The WINDOW drops NoResize (a drag on an edge or a corner is the point of the feature);
+    -- the PILL keeps it, because a drag grip on a 230 x 34 capsule is a trap. The bit is TESTED before it is
+    -- subtracted and the constant is the kit's, so a kit that ever ships a different flags set cannot make this a
+    -- silent subtraction from somebody else's bit.
+    local flags = U.WINDOW_FLAGS
+    if st.minimized ~= true and type(flags) == 'number' and flags % (2 * NO_RESIZE) >= NO_RESIZE then
+        flags = flags - NO_RESIZE
+    end
+
     local fade = U.ease(st.anim)
     U.set_window_alpha(fade * opacity())
     U.push_theme()
-    if imgui.Begin('##spelltracker', nil, U.WINDOW_FLAGS) then
+    if imgui.Begin('##spelltracker', nil, flags) then
         local ok, err = pcall(function ()
             local dl = imgui.GetWindowDrawList()
             local x, y = imgui.GetWindowPos()
+            -- THE SIZE THE WINDOW ACTUALLY HAS. A drag on an edge or a corner changes it without telling this addon, so
+            -- the body lays itself out from ImGui's own answer: the list's rect is w - S(36) by h - S(196) below, which
+            -- means the rows, the header and the child's scroll all follow a resize with no further bookkeeping.
+            -- Guarded: a nil answer, a zero-size window (the frame before its first layout) or a missing function
+            -- leaves the size that was asked for, so the frame still draws.
+            do
+                local ok_sz, gw, gh = pcall(imgui.GetWindowSize)
+                if ok_sz and tonumber(gw) and tonumber(gh) and gw >= S(80) and gh >= S(40) then
+                    w, h = gw, gh
+                end
+            end
+            st.win_w, st.win_h = w, h
             -- keep it on screen, but not while it is being dragged: fighting the mouse makes the drag stutter
             local kx = math.max(0, math.min(x, sw - w))
             local ky = math.max(0, math.min(y, sh - h))
@@ -1729,6 +1926,24 @@ local function draw_window(me, t)
                 save()
             end
             x, y = kx, ky
+            -- The size is the player's too, and it is written the way the place is: while the mouse is up, only when it
+            -- changed, and once - the write makes the two agree, so the next frame has nothing to do and a drag is
+            -- never fought. A size that IS the default is stored as nil rather than as a number, so a window nobody
+            -- has dragged keeps following /spells scale. The pill is skipped: its 230 x 34 is not the window's size.
+            if st.minimized ~= true and not imgui.IsMouseDown(0) then
+                if near_size(w, def_w) and near_size(h, def_h) then
+                    if cfg.w ~= nil or cfg.h ~= nil then
+                        cfg.w, cfg.h = nil, nil
+                        save()
+                    end
+                elseif not (near_size(cfg.w, w) and near_size(cfg.h, h)) then
+                    cfg.w, cfg.h = math.floor(w), math.floor(h)
+                    save()
+                end
+                -- and the addon now believes the window IS this size, so the next frame's target matches it and no
+                -- placement is asked for: a drag is answered with a save, never with a SetNextWindowSize
+                st.size_of = { w, h }
+            end
             -- folded: the pill, and nothing else of the window (no header, no controls, no list)
             if st.minimized == true then
                 draw_pill(dl, x, y, w, h, t)
@@ -1795,7 +2010,7 @@ local function draw_window(me, t)
             local mode_opts = {}
             for _, md in ipairs(modes()) do mode_opts[#mode_opts + 1] = { md.id, md.label or md.id } end
             local _, mw, clicked = U.segments(dl, '##st_mode', x + S(18), cy - S(13), S(26), mode_opts, cfg.mode,
-                function (o) return pill_colour(MODE_COLOR, o[1], 'accent') end)
+                function (o) return pill_colour(MODE_COLOR, o[1], 'accent') end, F.semi, T.small)
             if clicked then set_mode(clicked) end
             ctl_x = x + S(18) + mw + S(22)
 
@@ -1828,14 +2043,18 @@ local function draw_window(me, t)
                 if sk.id then skill_opts[#skill_opts + 1] = { sk.id, sk.label or sk.id } end
             end
             local _, _, sk_clicked = U.segments(dl, '##st_skill', x + S(18), py, S(24), skill_opts,
-                cfg.skill or 'all', function (o) return pill_colour(SKILL_COLOR, o[1], 'accent2') end)
+                cfg.skill or 'all', function (o) return pill_colour(SKILL_COLOR, o[1], 'accent2') end, F.semi, T.small)
             if sk_clicked then set_skill(sk_clicked) end
 
             -- the list: a child gives the wheel and clips every row to its card, so nothing draws over the header
             local rx = x + S(18)
             local ry = py + S(34)
             local rw = w - S(36)
-            local rh = y + h - S(16) - ry
+            -- The footer band: the two scale sliders sit on the bottom-right of the card, one above the other, so the
+            -- list stops ABOVE both of them. Reserving the whole band here - rather than drawing the sliders over the
+            -- last row - is what keeps a row from hiding under a control at any window height or scale.
+            local footer_h = S(FOOTER_ROW * FOOTER_ROWS)
+            local rh = y + h - S(16) - footer_h - ry
             if rh > S(24) then
                 imgui.SetCursorScreenPos({ rx, ry })
                 if imgui.BeginChild('##st_rows', { rw, rh }, 256, 0) then
@@ -1843,7 +2062,7 @@ local function draw_window(me, t)
                     -- the header or past the card's bottom edge (auctionhouse-vanacore.lua:2242 does the same)
                     local cdl = imgui.GetWindowDrawList()
                     local rows = st.rows or {}
-                    local step_y = S(38)
+                    local step_y = row_h() + S(4)
                     -- the child's scrollbar takes the right edge: the rows stop before it, so a Wiki button is never
                     -- half under the grab
                     local row_w = rw - S(12)
@@ -1873,6 +2092,46 @@ local function draw_window(me, t)
                         end
                     end
                     imgui.EndChild()
+                end
+            end
+
+            -- The footer: the two scales as REAL controls on the bottom-right of the card, because "the letters are
+            -- too small" and "I cannot hit the pill" are things a player fixes by dragging rather than by typing a
+            -- number. Both are the kit's own slider (ui.lua's track, fill, knob and value label), not hand-rolled
+            -- tracks, and each drives the same setting its command drives. One place, both knobs: no settings tab.
+            --
+            -- Right-aligned with the window's 18 px padding, with the corner left empty - NoResize is off, so the
+            -- bottom-right corner is the resize grip, and a slider that reached it would swallow the grip. The value
+            -- label's right edge is the control's real right edge, and that is what sits S(18) inside the window.
+            local pill_cy = y + h - S(16) - S(FOOTER_ROW / 2)
+            local text_cy = pill_cy - S(FOOTER_ROW)
+            local picked, moved, released = footer_slider(dl, '##st_text', 'Text', x, w, text_cy,
+                st.text_drag or text_pct(), nil)
+            -- the frame it is being dragged on draws the value it reports; the setting is written ONCE, when the mouse
+            -- lets go, so a drag does not save the settings file on every frame
+            if moved and tonumber(picked) then st.text_drag = math.floor(tonumber(picked) + 0.5) end
+            if released then
+                local n = clamp_pct(st.text_drag or picked)
+                local changed = cfg.text_scale ~= n
+                st.text_drag = nil
+                if changed then
+                    cfg.text_scale = n
+                    save()
+                end
+            end
+            -- The pill scale. The full window cannot show what it does - the window does not resize with it - so its
+            -- value label is the only feedback here, and the word says which surface it is.
+            local ppicked, pmoved, preleased = footer_slider(dl, '##st_pill', 'Pill', x, w, pill_cy,
+                st.pill_drag or pill_pct(),
+                'Pill scale: the size of the window while it is folded to the pill (it does not resize this window)')
+            if pmoved and tonumber(ppicked) then st.pill_drag = math.floor(tonumber(ppicked) + 0.5) end
+            if preleased then
+                local n = clamp_pct(st.pill_drag or ppicked)
+                local changed = cfg.pill_scale ~= n
+                st.pill_drag = nil
+                if changed then
+                    cfg.pill_scale = n
+                    save()
                 end
             end
 
@@ -1998,7 +2257,7 @@ end)
 -- Commands
 -------------------------------------------------------------------------------
 
-local HELP = '/spells [toggle|show|hide|minimize|minimize off|reset|mode ace|cw|wew|theme <id>|scale <50-300>|learned on|off|now on|off|held on|off|here|alerts on|off|alerts shop|drop|bcnm on|off|alerts sound on|off|sync|rescan|sound on|off|debug]'
+local HELP = '/spells [toggle|show|hide|minimize|minimize off|reset|mode ace|cw|wew|theme <id>|scale <50-300>|text <50-300>|pill <50-300>|learned on|off|now on|off|held on|off|here|alerts on|off|alerts shop|drop|bcnm on|off|alerts sound on|off|sync|rescan|sound on|off|debug]'
 
 listen('command', function (e)
     local words = {}
@@ -2032,10 +2291,15 @@ listen('command', function (e)
     elseif what == 'reset' then
         cfg.x, cfg.y = nil, nil
         cfg.scale = DEFAULTS.scale
+        cfg.text_scale = DEFAULTS.text_scale
+        cfg.pill_scale = DEFAULTS.pill_scale
+        cfg.w, cfg.h = nil, nil
         cfg.opacity = DEFAULTS.opacity
         st.recenter, st.cache_key = true, nil
+        -- a reset during a drag drops the drag, so both sliders come back at 100 with the rest
+        st.text_drag, st.pill_drag = nil, nil
         save()
-        say('position, scale and opacity back to their defaults')
+        say('position, size, text and pill scale, and opacity back to their defaults')
     elseif what == 'mode' then
         if not set_mode(arg) then say('modes: ' .. mode_list()) end
     elseif what == 'theme' then
@@ -2050,12 +2314,35 @@ listen('command', function (e)
     elseif what == 'scale' then
         local n = tonumber(arg)
         if n == nil then
-            say('/spells scale <50-300>')
+            say('/spells scale <50-300>, now ' .. scale_pct() .. '%')
         else
-            cfg.scale = math.max(50, math.min(300, math.floor(n)))
+            cfg.scale = clamp_pct(n)
             st.cache_key = nil
             save()
             say('scale: ' .. cfg.scale .. '%')
+        end
+    elseif what == 'text' then
+        -- the readability knob: the font sizes only. It is also the slider on the bottom-right of the window, and this
+        -- is the keyboard route to the same number.
+        local n = tonumber(arg)
+        if n == nil then
+            say('/spells text <50-300>, now ' .. text_pct() .. '%  (the same as the slider, bottom right)')
+        else
+            cfg.text_scale = clamp_pct(n)
+            st.text_drag = nil
+            save()
+            say('text scale: ' .. text_pct() .. '%')
+        end
+    elseif what == 'pill' then
+        -- the capsule only: the window, the list and the letters are untouched by it
+        local n = tonumber(arg)
+        if n == nil then
+            say('/spells pill <50-300>, now ' .. pill_pct() .. '%')
+        else
+            cfg.pill_scale = clamp_pct(n)
+            st.pill_drag = nil
+            save()
+            say('pill scale: ' .. pill_pct() .. '%')
         end
     elseif what == 'learned' then
         if arg == 'on' or arg == 'off' then
@@ -2142,6 +2429,16 @@ listen('command', function (e)
         say(string.format('%d shown, %d in the job, %d learnt, %d to learn, %d out of reach at %d',
             #(st.rows or {}), tonumber(c.total) or 0, tonumber(c.learned) or 0, tonumber(c.missing) or 0,
             tonumber(c.unreachable) or 0, tonumber(DATA and DATA.level_cap) or 75))
+        -- the three scales, because 'the text is too small' and 'the window is too small' are different fixes, and the
+        -- size ImGui answered is where a legibility complaint actually starts
+        say(string.format('scales: window %d%%, text %d%%, pill %d%%', scale_pct(), text_pct(), pill_pct()))
+        local ww, wh = tonumber(st.win_w), tonumber(st.win_h)
+        if ww ~= nil and wh ~= nil then
+            say(string.format('window: %d x %d (%s)', math.floor(ww), math.floor(wh),
+                (tonumber(cfg.w) ~= nil and tonumber(cfg.h) ~= nil) and 'resized by hand' or 'the default for this scale'))
+        else
+            say('window: not drawn yet this session, so its size is not measured')
+        end
         say('bags read: ' .. bag_list(scan))
         say(string.format('held scrolls: %d', held_count(scan and scan.held)))
         -- the ledger, in the three facts that explain a missing or wrong marker: how many pages came back, how many
