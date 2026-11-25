@@ -22,6 +22,8 @@ Clawmark, VanaStore), so it follows the theme, the window scale, the opacity and
 /spells                     the window on or off
 /spells show                open it
 /spells hide                close it
+/spells minimize            fold the window down to a pill (see below)
+/spells minimize off        unfold it again
 /spells reset               position, scale and opacity back to their defaults
 /spells mode ace|cw|wew     which acquisition systems the badges allow
 /spells theme <id>          one of the kit's themes; no id lists them
@@ -40,6 +42,28 @@ Clawmark, VanaStore), so it follows the theme, the window scale, the opacity and
 ```
 
 An unknown argument prints the same list in one chat line.
+
+### Minimize: the pill
+
+The `-` button in the header (left of the close button) folds the window down to a pill about 230 x 34 - the word
+**Spelltracker**, a Play/Stop button and a Mute button, on the same card the window is drawn on. The fold is saved per
+character, so a window you left as a pill comes back as a pill next session. `/spells minimize` and
+`/spells minimize off` do the same thing from the keyboard.
+
+- **Click the pill to restore it.** The word is part of the hitbox, not a label beside it: anywhere on the pill that
+  is not Play/Stop or Mute brings the window back, with the current zone's rows already highlighted. Clicking either
+  of the two buttons does that button's job and never also restores the window.
+- **Play/Stop** - drawn as geometry, not as a font glyph: a triangle with a vertical left edge and its apex to the
+  right while the zone alerts are listening, a square while they are stopped. It is the same switch as
+  `/spells alerts on|off` (its tooltip names what the click will do). Stopping silences the chime, the highlight and
+  the pulse together.
+- **Mute** - a bell while the zone chime is audible and a bell-slash while it is muted. It is the same switch as
+  `/spells alerts sound on|off`, and it is **sound only**: a muted pill still pulses and the restored window still
+  highlights the rows.
+- **The pulse** - the pill's border breathes (`0.75 + 0.25 * sin(t * 4)` alpha, the kit's own focus-ring shape) while
+  the window is minimized, the alerts are listening, **and** the zone you are standing in has at least one row this
+  job still needs. Nothing pulses for a zone with nothing to find, for Stop, or once the window is restored. Only the
+  alpha moves: the pill never changes size or place, so it cannot shift under the mouse.
 
 ## The three modes
 

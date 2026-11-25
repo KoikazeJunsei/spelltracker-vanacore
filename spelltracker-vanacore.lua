@@ -14,6 +14,8 @@ In game:
 
   /spells                  the window on or off
   /spells show | hide      the same, said outright
+  /spells minimize         fold the window to a pill (its Play/Stop, Mute, and click-to-restore)
+  /spells minimize off     unfold it again
   /spells reset            position, scale and opacity back to their defaults
   /spells mode ace|cw|wew  which acquisition systems the badges allow (ACE, Crystal Warrior, Wings Era Warrior)
   /spells theme <id>       one of the UI kit's themes; no id lists them
@@ -37,7 +39,7 @@ theme, the scale and the controller.
 
 addon.name    = 'spelltracker-vanacore'
 addon.author  = 'koikaze'
-addon.version = '0.4.0'
+addon.version = '0.5.0'
 addon.desc    = 'SpellTracker: the spells this job can still learn, with where each one comes from.'
 
 local imgui = vana.imgui
@@ -109,6 +111,9 @@ local DEFAULTS = {
     -- highlight and not the noise. Per character with everything else.
     zone_alerts = true, alert_shop = true, alert_drop = true, alert_bcnm = true, zone_sound = true,
     x = nil, y = nil, opacity = 100, open_sound = true,
+    -- folded down to the pill. Per character like the rest, so a window folded away comes back as a pill next session
+    -- rather than springing open at full size.
+    minimized = false,
 }
 
 local config = nil
@@ -147,6 +152,9 @@ local st = {
     -- the zone index built from dice_data, and the dice counts for /spells debug: the one list merges both kinds, but
     -- the debug line still answers 'how many dice are there' separately.
     dice_idx = nil, dice_counts = { total = 0, usable = 0, known = 0, missing = 0, unknown = 0, held = 0, kinds = {} },
+    -- folded to the pill. cfg.minimized is what survives the session; this mirror is what the draw reads, so a nil or
+    -- hand-edited setting cannot make the first frame's branch disagree with the saved one.
+    minimized = cfg.minimized == true,
 }
 
 local function say(text) pcall(vana.chat.write, '[Spells] ' .. text, 106) end
@@ -1145,6 +1153,21 @@ local function announce_zone(hits, dice)
     if cfg.zone_sound ~= false then play_chime() end
 end
 
+-- Whether the zone the player is standing in has something this job still needs: the one condition the pill's pulse
+-- asks about, so the pulse and the highlighted rows can never disagree about whether the zone is worth a nudge. A nil
+-- or emptied set is 'no' rather than an error - the alerts clear it on a zone with nothing, and a checkout missing
+-- spells_core never fills it at all.
+local function zone_has_need()
+    if type(st.here_ids) ~= 'table' then return false end
+    return next(st.here_ids) ~= nil
+end
+
+-- The zone alerts' master switch, read exactly the way zone_in reads it (== true, so a hand-edited or older settings
+-- file with no key is OFF rather than quietly announced). One reading for the whole file: the pill's Play/Stop and its
+-- pulse must never claim the alerts are listening while the game stays silent, and /spells alerts and /spells debug
+-- print the same answer.
+local function alerts_listening() return cfg.zone_alerts == true end
+
 -- One zone-in, once. Nothing here writes to the game: no packet, no command, no action.
 local function zone_in(e)
     local id = type(e) == 'table' and e.zone or nil
@@ -1153,9 +1176,10 @@ local function zone_in(e)
     if name == nil then return false end
     local key = zone_key_of(name)
     if key == '' then return false end
-    -- the master switch. Read as == true so a hand-edited settings file with no key stays quiet instead of
-    -- announcing something the player never asked for. The highlight is part of the alert, so it goes too.
-    if cfg.zone_alerts ~= true then
+    -- the master switch, through the one reading of it the whole file shares (alerts_listening above): a hand-edited
+    -- settings file with no key stays quiet instead of announcing something the player never asked for. The highlight
+    -- is part of the alert, so it goes too.
+    if not alerts_listening() then
         st.here_ids = {}
         return false
     end
@@ -1192,6 +1216,30 @@ local function current_zone()
     return nil
 end
 
+-- The zone marks, read on demand and SILENTLY. Folding the window happens while the player stands still, so a pill
+-- that waited for the next zone-in would look dead in exactly the zone it was folded for. No chime here: the player
+-- asked to fold, not for an alert. It reads what the zone-in reads, so the pill's pulse and the highlighted rows can
+-- never disagree. Declared here, after every helper it calls - a local function is only visible to ones declared
+-- below it, and a missing upvalue would be a nil global (which pcall would swallow into 'nothing marked').
+local function refresh_here()
+    if not alerts_listening() then st.here_ids = {} return end
+    local name = zone_name(current_zone())
+    if name == nil then st.here_ids = {} return end
+    local key = zone_key_of(name)
+    if key == '' then st.here_ids = {} return end
+    local ids = {}
+    local hits, dice = zone_hits(key), dice_hits(key)
+    for i = 1, #(hits or {}) do
+        local id = hits[i].row and hits[i].row.id
+        if id ~= nil then ids[id] = true end
+    end
+    for i = 1, #(dice or {}) do
+        local id = dice[i].row and dice[i].row.id
+        if id ~= nil then ids[id] = true end
+    end
+    st.here_ids = ids
+end
+
 -- /spells here. Always answers: a listing, or the reason there is nothing to list (no zone named yet, or a zone the
 -- table sources nothing this job needs). It ignores last_zone_key on purpose - the player asked - and it is not
 -- gated by cfg.zone_alerts: the master switch is about the automatic notice, a typed command is not an interruption.
@@ -1220,7 +1268,7 @@ end
 -- the alert switches, said in one line for /spells alerts with no argument and for /spells debug
 local function alert_status()
     return string.format('zone alerts: %s (shop %s, drop %s, bcnm %s, sound %s)',
-        cfg.zone_alerts == true and 'on' or 'off',
+        alerts_listening() and 'on' or 'off',
         cfg.alert_shop == true and 'on' or 'off',
         cfg.alert_drop == true and 'on' or 'off',
         cfg.alert_bcnm == true and 'on' or 'off',
@@ -1246,6 +1294,21 @@ local function set_open(on)
         -- a fresh opening asks again (the 60 s gate in request_ledger is what decides whether anything is sent)
         st.ledger_asked = false
     end
+end
+
+-- Folded or not. cfg is what survives the session (a per-character settings file) and st is what the frame reads;
+-- keeping the two together here means neither the header button, the pill nor /spells can set one without the other.
+local function set_minimized(on)
+    on = on == true
+    st.minimized = on
+    -- folding happens where the player stands: read the zone now, without a chime, or the pill would stay quiet until
+    -- the next zone-in. Unfolding keeps the marks the window is about to draw.
+    if on then pcall(refresh_here) end
+    if cfg.minimized ~= on then
+        cfg.minimized = on
+        save()
+    end
+    return on
 end
 
 local function set_mode(id)
@@ -1510,19 +1573,123 @@ local function draw_row(dl, x0, y0, rw, row, i)
     end
 end
 
-local function draw_window(me)
+-- The pill: the window folded to its notification size, 230 x 34 at 100 % (scaled by S() like everything else). Wide
+-- enough for the word at the display face plus a 22 px Play/Stop and a 22 px Mute, each inside its own round hitbox.
+local PILL_W, PILL_H, PILL_BTN = 230, 34, 22
+
+-- The pill: one window folded down, not a second window. Left to right the word 'Spelltracker' in the kit's display
+-- face, a drawn Play/Stop and a Mute wearing the kit's own bell glyphs. EVERYTHING else - the word included - is the
+-- restore hitbox: one invisible button across the whole pill laid down FIRST, then the two real buttons over it.
+-- ImGui hands a click to the later item once the earlier one allows overlap, and the restore is guarded on both
+-- buttons below, so a press on either can never also restore the window.
+local function draw_pill(dl, x, y, w, h, t)
+    t = tonumber(t) or 0
+    local r = h / 2
+    do
+        local m = S(16)
+        dl:PushClipRect({ x - m, y - m }, { x + w + m, y + h + m }, false)
+        U.shadow(dl, x, y, w, h, r, 1)
+        dl:PopClipRect()
+    end
+    -- the kit's own card surface and border, so the pill looks like the family's other surfaces in every theme
+    U.panel(dl, x, y, w, h, P.card, 1, r, P.line)
+
+    -- Listening is the zone alerts' own switch (the same reading zone_in uses), so the button and the alerts can never
+    -- disagree. A muted pill still pulses and still highlights: mute is the chime only.
+    local listening = alerts_listening()
+
+    -- The pulse: the kit's breathing alpha (ui.lua's focus ring is 0.75 + 0.25 * sin(t * 4)) on the border, while
+    -- there is something here this job still needs. Alpha only - never a size, a position or a re-layout - so a
+    -- pulsing pill cannot shift under the mouse, and nothing pulses for an empty zone, for Stop, or when restored.
+    if listening and zone_has_need() then
+        dl:AddRect({ x, y }, { x + w, y + h }, U.u32(P.accent, 0.75 + 0.25 * math.sin(t * 4)), r, 15, 1)
+    end
+
+    -- the restore hitbox, first and full size. SetNextItemAllowOverlap is what lets the two buttons below be hovered
+    -- and clicked at all: without it the first item owns the mouse for as long as it is held, and they would be dead
+    -- buttons drawn over a live one.
+    imgui.SetCursorScreenPos({ x, y })
+    if imgui.SetNextItemAllowOverlap ~= nil then imgui.SetNextItemAllowOverlap() end
+    local restore = U.hit('##st_restore', w, h, r)
+
+    local cy = y + h / 2
+    -- one button geometry for both states and both buttons, measured from the right edge: neither target moves when
+    -- the glyph changes, and the word never pushes them around
+    local btn = math.min(S(PILL_BTN), h - S(6))
+    local mute_x = x + w - S(10) - btn
+    local play_x = mute_x - S(6) - btn
+
+    local face = F.disp or F.text
+    local text_x = x + S(14)
+    local text_w = math.max(S(24), play_x - text_x - S(8))
+    U.text_mid(dl, text_x, cy, U.fit('Spelltracker', face, T.h2, text_w), P.text, face, T.h2)
+
+    -- Play is a triangle with a vertical left edge and its apex to the right; Stop is a square. Both are geometry on
+    -- the draw list rather than a glyph: the kit's icon table has no play or stop, and its faces come from the
+    -- client's default font (ui.lua:172), so an unknown glyph would draw as an empty box. The hitbox is the kit's own
+    -- small round button in both states, so the target is identical whether it reads Play or Stop.
+    imgui.SetCursorScreenPos({ play_x, cy - btn / 2 })
+    local play_pressed, play_hovered, play_hv = U.hit('##st_play', btn, btn, btn / 2)
+    local lit = listening and P.accent or P.dim
+    local bcx = play_x + btn / 2
+    dl:AddCircleFilled({ bcx, cy }, btn / 2, U.u32(lit, 0.08 + 0.16 * play_hv), 32)
+    if play_hv > 0 then dl:AddCircle({ bcx, cy }, btn / 2, U.u32(lit, 0.55 * play_hv), 32, 1) end
+    local gh = btn * 0.46
+    local gy = cy - gh / 2
+    if listening then
+        local gw = gh * 0.9
+        -- a triangle's visual mass sits left of its bounding box, so it is nudged right to look centred in the circle
+        local gx = bcx - gw / 2 + gw / 6
+        -- the first two points share x: a vertical left edge, and the apex on the right
+        dl:AddTriangleFilled({ gx, gy }, { gx, gy + gh }, { gx + gw, gy + gh / 2 }, U.u32(lit))
+    else
+        dl:AddRectFilled({ bcx - gh / 2, gy }, { bcx + gh / 2, gy + gh }, U.u32(lit), S(1))
+    end
+    if play_hovered then
+        -- named as what the click will DO, not as the state it is in
+        U.with_font(F.text, T.small, imgui.SetTooltip,
+            listening and 'Stop the zone alerts (the pill stops pulsing)' or 'Start the zone alerts again')
+    end
+    if play_pressed then
+        cfg.zone_alerts = not listening
+        save()
+    end
+
+    -- Mute is the chime only, and its tooltip says so: the kit's own bell / bell-slash, both in its icon table
+    local audible = cfg.zone_sound ~= false
+    local mute_pressed = U.icon_button(dl, '##st_mute', mute_x, cy - btn / 2, btn,
+        audible and 'bell' or 'bell-slash', audible and P.dim or P.warn,
+        audible and 'Mute the zone chime (the pulse and the highlight stay)' or 'Unmute the zone chime')
+    if mute_pressed then
+        cfg.zone_sound = not audible
+        save()
+    end
+
+    -- the whole pill restores, the word included - but never on a frame one of the two buttons was pressed
+    if restore and not play_pressed and not mute_pressed then set_minimized(false) end
+end
+
+local function draw_window(me, t)
     local sw, sh = 1920, 1080
     do
         local ok, w, h = pcall(vana.ui.screen)
         if ok and tonumber(w) and tonumber(h) then sw, sh = w, h end
     end
     local sc = scale_pct() / 100
-    -- wider than the list needs, because the controls row has to hold three switches, the mode segments and the
-    -- search box side by side: at 700 the third one lands on top of the search field (measured at the kit's 13 px face)
-    local w = math.max(S(320), math.floor(S(880)))
-    local h = math.max(S(260), math.floor(S(560)))
-    w = math.min(w, sw - S(20))
-    h = math.min(h, sh - S(20))
+    -- The pill is the same window at a notification size, so this is a size branch and not a second window: 230 x 34
+    -- at 100 %, scaled by S() like every other measurement, and never the full window's 880 x 560.
+    local w, h
+    if st.minimized == true then
+        w = math.min(S(PILL_W), sw - S(20))
+        h = math.min(S(PILL_H), sh - S(20))
+    else
+        -- wider than the list needs, because the controls row has to hold three switches, the mode segments and the
+        -- search box side by side: at 700 the third one lands on top of the search field (measured at the kit's 13 px face)
+        w = math.max(S(320), math.floor(S(880)))
+        h = math.max(S(260), math.floor(S(560)))
+        w = math.min(w, sw - S(20))
+        h = math.min(h, sh - S(20))
+    end
 
     -- The position is placed ONCE and then left alone. ImGuiCond_Always is applied on every frame, so pinning the
     -- saved place with it (which this did) overrides the window's own position each frame: the player drags, the next
@@ -1562,6 +1729,11 @@ local function draw_window(me)
                 save()
             end
             x, y = kx, ky
+            -- folded: the pill, and nothing else of the window (no header, no controls, no list)
+            if st.minimized == true then
+                draw_pill(dl, x, y, w, h, t)
+                return
+            end
             local m = S(40)
             dl:PushClipRect({ x - m, y - m }, { x + w + m, y + h + m }, false)
             U.shadow(dl, x, y, w, h, S(16), 1)
@@ -1601,9 +1773,16 @@ local function draw_window(me)
             if stored_total > 0 then
                 local store_text = string.format('%d stored', stored_total)
                 local store_w = U.measure(store_text, F.semi, T.small)
-                if hx + store_w <= x + w - S(42) - S(12) then
+                if hx + store_w <= x + w - S(72) - S(12) then
                     U.text(dl, hx, y + S(44), store_text, P.accent, F.semi, T.small)
                 end
+            end
+            -- fold to the pill. Its own key and its own 26 px box, left of the close button (which keeps its place, so
+            -- neither target moved): two keys mean a click on one can never fire the other, and the fold is a
+            -- different act from shutting the window.
+            if U.icon_button(dl, '##st_min', x + w - S(72), y + S(14), S(26), 'window-minimize', P.dim,
+                'Minimize to the pill') then
+                set_minimized(true)
             end
             if U.icon_button(dl, '##st_close', x + w - S(42), y + S(14), S(26), 'xmark', P.dim, 'Close') then
                 set_open(false)
@@ -1741,7 +1920,7 @@ local function tick()
     -- the bags are read before the rows: an empty bag, a nil container and a character at the select screen all have
     -- to end up with unheld rows, never with a frame that raised
     refresh_rows(me, scan_bags())
-    if st.open or st.anim > 0 then draw_window(me) end
+    if st.open or st.anim > 0 then draw_window(me, t) end
     U.draw_toasts(t)
 end
 
@@ -1819,7 +1998,7 @@ end)
 -- Commands
 -------------------------------------------------------------------------------
 
-local HELP = '/spells [toggle|show|hide|reset|mode ace|cw|wew|theme <id>|scale <50-300>|learned on|off|now on|off|held on|off|here|alerts on|off|alerts shop|drop|bcnm on|off|alerts sound on|off|sync|rescan|sound on|off|debug]'
+local HELP = '/spells [toggle|show|hide|minimize|minimize off|reset|mode ace|cw|wew|theme <id>|scale <50-300>|learned on|off|now on|off|held on|off|here|alerts on|off|alerts shop|drop|bcnm on|off|alerts sound on|off|sync|rescan|sound on|off|debug]'
 
 listen('command', function (e)
     local words = {}
@@ -1837,6 +2016,19 @@ listen('command', function (e)
         set_open(true)
     elseif what == 'hide' or what == 'close' then
         set_open(false)
+    elseif what == 'minimize' then
+        -- the keyboard route to the same state the header button sets. Off restores; anything else (or nothing) folds
+        -- the window to the pill, opening it first so a closed tracker answers with a pill rather than silently doing
+        -- nothing. Both save through set_minimized, so a reload comes back the same way.
+        if arg == 'off' or arg == 'no' then
+            set_open(true)
+            set_minimized(false)
+            say('window restored')
+        else
+            set_open(true)
+            set_minimized(true)
+            say('minimized to the pill: click it to restore, or /spells minimize off')
+        end
     elseif what == 'reset' then
         cfg.x, cfg.y = nil, nil
         cfg.scale = DEFAULTS.scale
@@ -1973,7 +2165,7 @@ listen('command', function (e)
         local zkey = zname ~= nil and zone_key_of(zname) or ''
         say(string.format("zone '%s' (%s), %d sourced spells here, alerts %s",
             tostring(zname or '?'), zkey ~= '' and zkey or 'none', zone_sourced(zkey),
-            cfg.zone_alerts == true and 'on' or 'off'))
+            alerts_listening() and 'on' or 'off'))
         -- the dice line, the same three facts as the row line above it: how many the table has, how many the client
         -- says are learnt, and how many it places in the zone the player is standing in. The third is the table's
         -- count, not this character's, so 'no die here' and 'the wiki has no die here' stay different answers.
